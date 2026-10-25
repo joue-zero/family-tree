@@ -19,12 +19,12 @@ function toast(msg) {
 }
 
 // ───────────────────────── state ─────────────────────────
-const CARD_W = 148, CARD_H = 168, GAP_X = 20, GAP_Y = 76, SP_GAP = 16, PAD = 50;
+const CARD_W = 148, CARD_H = 184, GAP_X = 20, GAP_Y = 76, SP_GAP = 16, PAD = 50;
 let data = { meta: { title: 'شجرة العيلة' }, people: [] };
 let byId = new Map();
 let kids = new Map();
 let baseText = '';                 // family.json as last loaded/saved (for merge on save)
-const state = { root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
+const state = { me: store.get('ft-me'), root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
 let cfg = { ...detectRepo(), branch: 'main', token: '', ...(store.get('ft-cfg') || {}) };
 let cur = null;                    // current layout
 
@@ -34,7 +34,9 @@ function detectRepo() {
 }
 
 // ───────────────────────── data model ─────────────────────────
+const ancCache = new Map();
 function index() {
+  ancCache.clear();
   byId = new Map(data.people.map((p) => [p.id, p]));
   for (const p of data.people) {
     p.parents = (p.parents || []).filter((i) => byId.has(i) && i !== p.id).slice(0, 2);
@@ -133,6 +135,8 @@ async function load() {
     if (n) setTimeout(() => toast(`${n} تسجيل/فيديو ماتحفظوش قبل ما الصفحة تتقفل واتشالوا`), 800);
   }
   index();
+  if (state.me && !byId.has(state.me)) state.me = null;
+  $('#btnMe').textContent = state.me ? `👤 ${get(state.me).name.split(' ')[0]}` : '👤 أنا مين؟';
   state.root = data.meta.root && byId.has(data.meta.root) ? data.meta.root : (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
   $('#title').textContent = data.meta.title || 'شجرة العيلة';
   document.title = data.meta.title || 'شجرة العيلة';
@@ -298,7 +302,9 @@ function cardHTML(c) {
   const up = c.up ? '<button class="bdg up" data-act="up" title="العيلة الأصلية (فوق)">⇡</button>' : '';
   const pk = state.picks.indexOf(p.id);
   const pkb = pk >= 0 && !c.ghost ? `<span class="pk">${pk + 1}</span>` : '';
-  return `<div class="av">${av}</div><div class="nm">${esc(p.name)}</div>${note}${up}${tog}${pkb}`;
+  const me = state.me && byId.has(state.me) && !c.ghost ? shortRel(get(state.me), p) : '';
+  const rl = me ? `<span class="rl${p.id === state.me ? ' is-me' : ''}">${esc(me)}</span>` : '';
+  return `<div class="av">${av}</div><div class="nm">${esc(p.name)}</div>${note}${rl}${up}${tog}${pkb}`;
 }
 
 function render(opts = {}) {
@@ -325,7 +331,7 @@ function render(opts = {}) {
       requestAnimationFrame(() => requestAnimationFrame(() => (el.style.opacity = '')));
     }
     el.dataset.id = c.p.id; el.dataset.key = c.key;
-    el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}`;
+    el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}${state.me === c.p.id && !c.ghost ? ' me' : ''}`;
     el.innerHTML = cardHTML(c);
     el.style.transform = `translate(${c.x}px,${c.y}px)`;
   }
@@ -467,6 +473,7 @@ function renderPanel() {
       <h2>${esc(p.name)}${p.death ? ' <small class="sub">(رحمه الله)</small>' : ''}</h2>
       ${p.nick ? `<div class="sub">${esc(p.nick)}</div>` : ''}
       <div class="sub">${esc(lineage(p))}</div>
+      ${state.me && state.me !== p.id && shortRel(get(state.me), p) ? `<div class="sub" style="color:var(--accent);font-weight:600">بالنسبة لك: ${esc(shortRel(get(state.me), p))}</div>` : ''}
       ${life ? `<div class="sub">${esc(life)}</div>` : ''}
     </div>
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
@@ -479,6 +486,7 @@ function renderPanel() {
       ${ch.length || sp.length ? '<button data-act="root">🌳 اعرض شجرته</button>' : ''}
       ${p.parents.length ? '<button data-act="up">⇡ عيلته الأصلية</button>' : ''}
       <button data-act="cmp">⚖ صلة القرابة</button>
+      ${state.me === p.id ? '' : '<button data-act="me">👤 ده أنا</button>'}
     </div>
     ${ed ? `<h3>إضافة</h3><div class="btnrow">
       <button data-add="child">+ ابن / بنت</button><button data-add="spouse">+ زوج / زوجة</button>
@@ -502,6 +510,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'up') goUp(id);
   if (act === 'cmp') { startCompare(id); return; }
   if (act === 'media') { openMedia(id); return; }
+  if (act === 'me') { setMe(id); toast('تمام — الصلات اتحسبت من منظورك'); return; }
   if (act === 'edit') openForm({ person: id });
   if (act === 'del') removePerson(id);
 });
@@ -774,7 +783,8 @@ const G = (b, m, f) => (b.gender === 'f' ? f : m);
 const H = (x) => (x.gender === 'f' ? 'هي' : 'هو');
 const ORD = ['', 'الأولى', 'التانية', 'التالتة', 'الرابعة', 'الخامسة', 'السادسة'];
 function ancMap(p) {                       // id → path [p … ancestor] (shortest)
-  const m = new Map([[p.id, [p]]]); let fr = [p];
+  if (ancCache.has(p.id)) return ancCache.get(p.id);
+  const m = new Map([[p.id, [p]]]); ancCache.set(p.id, m); let fr = [p];
   while (fr.length) {
     const next = [];
     for (const x of fr) for (const pid of x.parents) if (!m.has(pid)) { const y = get(pid); m.set(pid, [...m.get(x.id), y]); next.push(y); }
@@ -820,6 +830,35 @@ function bloodRel(a, b) {
   }
   return { noun: n, common: da > 0 && db > 0 ? all : [] };
 }
+// تسمية قصيرة: b إيه بالنسبة لـ a (للكروت)
+function shortRel(a, b) {
+  if (a.id === b.id) return 'أنا';
+  const br = bloodRel(a, b); if (br) return br.noun;
+  if (a.spouses.includes(b.id)) return G(b, 'زوج', 'زوجة');
+  for (const s of a.spouses.map(get)) { const r = bloodRel(s, b); if (r) return `${r.noun} ${G(s, 'الزوج', 'الزوجة')}`; }
+  for (const sb of b.spouses.map(get)) { const r = bloodRel(a, sb); if (r) return `${G(b, 'زوج', 'زوجة')} ${r.noun}`; }
+  return '';
+}
+function setMe(id) {
+  state.me = id || null; store.set('ft-me', state.me);
+  $('#btnMe').textContent = state.me ? `👤 ${get(state.me).name.split(' ')[0]}` : '👤 أنا مين؟';
+  render(); if (id) locate(id);
+}
+function openMe() {
+  dlg.innerHTML = `<form><h2>👤 أنت مين في العيلة؟</h2><p class="hint">اختار اسمك وهيظهر على كل كارت صلته بيك (خالك، ابن عمتك…). بيتحفظ على جهازك بس.</p>
+    <input id="meq" placeholder="اكتب اسمك…" autocomplete="off"><ul id="exl"></ul>
+    <div class="dlgActions">${state.me ? '<button type="button" id="meClear">مسح اختياري</button>' : ''}<button type="button" data-close>إغلاق</button></div></form>`;
+  const list = $('#exl', dlg), draw = () => {
+    const s = norm($('#meq', dlg).value);
+    list.innerHTML = data.people.filter((x) => !s || norm(x.name).includes(s)).slice(0, 40).map((x) => `<li data-id="${x.id}" class="${x.id === state.me ? 'on' : ''}">${esc(x.name)} <small class="hint">${esc(lineage(x) || lifeText(x))}</small></li>`).join('');
+  };
+  $('#meq', dlg).oninput = draw; draw();
+  list.onclick = (e) => { const li = e.target.closest('li'); if (li) { dlg.close(); setMe(li.dataset.id); toast('تمام — الصلات اتحسبت من منظورك'); } };
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  const c = $('#meClear', dlg); if (c) c.onclick = () => { dlg.close(); setMe(null); };
+  dlg.showModal(); $('#meq', dlg).focus();
+}
+$('#btnMe').onclick = openMe;
 function describe(a, b) {                  // كل الصلات اللي تخلي b قريب لـ a
   const out = [], seen = new Set(), add = (s) => { if (!seen.has(s)) { seen.add(s); out.push(s); } };
   const br = bloodRel(a, b);
