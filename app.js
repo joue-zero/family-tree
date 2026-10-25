@@ -62,12 +62,19 @@ function index() {
 const get = (id) => byId.get(id);
 const src = (path) => (path && (state.photos[path] || path)) || '';
 const photoSrc = (p) => src(p.photo);
-const lifeText = (p) => {
-  const d = p.death && p.death !== '?' ? p.death : '';
-  if (p.birth && d) return `${p.birth} – ${d}`;
-  if (p.birth) return p.death ? `${p.birth} –` : p.birth;
+const lifeText = (p, full) => {      // cards show the year only; the panel shows full dates
+  const f = (s) => (full ? s : (s || '').match(/\d{4}/)?.[0] ?? s);
+  const b = f(p.birth), d = p.death && p.death !== '?' ? f(p.death) : '';
+  if (b && d) return `${b} – ${d}`;
+  if (b) return p.death ? `${b} –` : b;
   return d ? `– ${d}` : '';
 };
+function ageText(p) {
+  const by = yearOf(p); if (by === 9999) return '';
+  const dy = parseInt((p.death || '').match(/\d{4}/)?.[0]);
+  if (p.death) return dy ? `عاش ${dy - by} سنة` : '';
+  return `${new Date().getFullYear() - by} سنة`;
+}
 function lineage(p) {
   const out = []; let c = p;
   for (let i = 0; i < 3; i++) {
@@ -339,7 +346,7 @@ function render(opts = {}) {
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp(); drawMini();
+  renderPanel(); renderCmp(); drawMini(); updateBday();
 }
 
 // pan & zoom ---------------------------------------------------
@@ -497,7 +504,7 @@ function renderPanel() {
   if (wasHidden) panel.style.animation = 'none', void panel.offsetWidth, panel.style.animation = '';
   const par = p.parents.map(get), sp = p.spouses.map(get), ch = kids.get(p.id) || [], sib = siblings(p), ed = state.edit;
   const sec = (title, list, kind) => list.length ? `<h3>${title}</h3><div class="chips">${list.map((x) => chip(x, ed && kind ? `<i data-unlink="${kind}:${x.id}" title="فصل العلاقة">×</i>` : '')).join('')}</div>` : '';
-  const life = lifeText(p);
+  const life = lifeText(p, true), age = ageText(p);
   panel.innerHTML = `
     <button class="x" data-act="close">✕</button>
     <div class="hero">
@@ -506,7 +513,7 @@ function renderPanel() {
       ${p.nick ? `<div class="sub">${esc(p.nick)}</div>` : ''}
       <div class="sub">${esc(lineage(p))}</div>
       ${state.me && state.me !== p.id && shortRel(get(state.me), p) ? `<div class="sub" style="color:var(--accent);font-weight:600">بالنسبة لك: ${esc(shortRel(get(state.me), p))}</div>` : ''}
-      ${life ? `<div class="sub">${esc(life)}</div>` : ''}
+      ${life ? `<div class="sub">${esc(life)}${age ? ` · ${esc(age)}` : ''}</div>` : ''}
     </div>
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
@@ -607,8 +614,9 @@ function openForm({ rel, anchor, person }) {
       <div class="seg">
         <label><input type="radio" name="gender" value="m" required ${g === 'm' ? 'checked' : ''}><span>ذكر</span></label>
         <label><input type="radio" name="gender" value="f" ${g === 'f' ? 'checked' : ''}><span>أنثى</span></label></div>
-      <div class="row2"><label>سنة الميلاد<input name="birth" inputmode="numeric" value="${esc(P?.birth)}" placeholder="مثال: 1985"></label>
-        <label>سنة الوفاة (لو متوفى)<input name="death" value="${esc(P?.death === '?' ? '' : P?.death)}" placeholder="؟ لو مش معروفة"></label></div>
+      <div class="row2"><label>الميلاد (سنة أو تاريخ كامل)<input name="birth" value="${esc(P?.birth)}" placeholder="1985 أو 1985-03-27"></label>
+        <label>الوفاة (لو متوفى)<input name="death" value="${esc(P?.death === '?' ? '' : P?.death)}" placeholder="2015 أو 2015-10-02 أو ؟"></label></div>
+      <p class="hint" style="margin:4px 0 0">اكتب التاريخ كامل (سنة-شهر-يوم) عشان يظهر في «القادم» (أعياد الميلاد وذكرى الوفاة).</p>
       <label>رقم التليفون<input name="phone" type="tel" value="${esc(P?.phone)}"></label>
       <label>ملاحظات<textarea name="note">${esc(P?.note)}</textarea></label>
       <label>تفاصيل إضافية (الوظيفة، العنوان، تاريخ الجواز…)</label>
@@ -809,6 +817,61 @@ function openMedia(id) {
   };
   dlg.showModal();
 }
+
+// ───────────────────────── أعياد الميلاد والذكرى ─────────────────────────
+function parseDate(s) {
+  s = (s || '').trim(); let m = s.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/), r;
+  if (m) r = { y: +m[1], m: +m[2], d: +m[3] };
+  else if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/))) r = { y: +m[3], m: +m[2], d: +m[1] };
+  return r && r.m >= 1 && r.m <= 12 && r.d >= 1 && r.d <= 31 ? r : null;
+}
+const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'];
+function events() {
+  const today = new Date(); today.setHours(0, 0, 0, 0); const out = [];
+  for (const p of data.people) {
+    for (const [kind, raw] of [['birth', p.death ? '' : p.birth], ['death', p.death !== '?' ? p.death : '']]) {
+      const d = parseDate(raw); if (!d) continue;
+      let next = new Date(today.getFullYear(), d.m - 1, d.d);
+      if (next < today) next = new Date(today.getFullYear() + 1, d.m - 1, d.d);
+      out.push({ p, kind, d, next, days: Math.round((next - today) / 864e5), n: next.getFullYear() - d.y });
+    }
+  }
+  return out.sort((a, b) => a.days - b.days);
+}
+const whenText = (days) => (days === 0 ? 'النهاردة' : days === 1 ? 'بكرة' : days === 2 ? 'بعد يومين' : days <= 10 ? `بعد ${days} أيام` : `بعد ${days} يوم`);
+function updateBday() {
+  const n = events().filter((e) => e.days <= 7).length;
+  $('#btnBday').textContent = n ? `🎂 ${n}` : '🎂';
+}
+function openBday() {
+  const ev = events(), soon = ev.filter((e) => e.days <= 90).slice(0, 40);
+  const row = (e) => `<li data-go="${e.p.id}" class="bd${e.days <= 7 ? ' soon' : ''}"><span class="bi">${e.kind === 'birth' ? '🎂' : '🕊'}</span>
+    <div><b>${esc(e.p.name)}</b><div class="hint">${e.kind === 'birth' ? `عيد ميلاد ${e.n} (${e.d.d} ${MONTHS[e.d.m - 1]})` : `ذكرى وفاة ${e.n} سنة (${e.d.d} ${MONTHS[e.d.m - 1]})`}</div></div>
+    <span class="when">${whenText(e.days)}</span></li>`;
+  dlg.innerHTML = `<form><h2>🎂 القادم في العيلة</h2>
+    ${soon.length ? `<ul class="bdl">${soon.map(row).join('')}</ul>` : `<p class="hint">مفيش مناسبات في الـ 90 يوم الجايين. ${ev.length ? '' : 'اكتب تاريخ الميلاد كامل (مثلاً 1985-03-27) من تعديل بيانات الشخص عشان يظهر هنا.'}</p>`}
+    <div class="dlgActions"><button type="button" id="ics" ${ev.length ? '' : 'disabled'}>📅 تنزيل التقويم (ICS)</button><button type="button" data-close class="primary">إغلاق</button></div>
+    <p class="hint">ملف الـ ICS بيتفتح في تقويم الموبايل أو جوجل، وبيكرر كل المناسبات كل سنة مع تنبيه قبلها بيوم.</p></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  $('.bdl', dlg)?.addEventListener('click', (e) => { const li = e.target.closest('[data-go]'); if (li) { dlg.close(); locate(li.dataset.go); } });
+  $('#ics', dlg).onclick = exportICS;
+  dlg.showModal();
+}
+function exportICS() {
+  const pad = (n) => String(n).padStart(2, '0'), stamp = new Date().toISOString().replace(/[-:]|\.\d+/g, '');
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//family-tree//AR', 'CALSCALE:GREGORIAN', `X-WR-CALNAME:${data.meta.title || 'شجرة العيلة'}`];
+  for (const e of events()) {
+    const ds = `${e.next.getFullYear()}${pad(e.next.getMonth() + 1)}${pad(e.next.getDate())}`;
+    L.push('BEGIN:VEVENT', `UID:${e.p.id}-${e.kind}@family-tree`, `DTSTAMP:${stamp}`, `DTSTART;VALUE=DATE:${ds}`,
+      `SUMMARY:${e.kind === 'birth' ? '🎂 عيد ميلاد' : '🕊 ذكرى وفاة'} ${e.p.name}`, 'RRULE:FREQ=YEARLY',
+      'BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:تذكير', 'TRIGGER:-P1D', 'END:VALARM', 'END:VEVENT');
+  }
+  L.push('END:VCALENDAR');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([L.join('\r\n')], { type: 'text/calendar;charset=utf-8' }));
+  a.download = 'family-events.ics'; a.click();
+}
+$('#btnBday').onclick = openBday;
 
 // ───────────────────────── صلة القرابة ─────────────────────────
 const G = (b, m, f) => (b.gender === 'f' ? f : m);
