@@ -217,7 +217,8 @@ async function saveToGitHub() {
 }
 
 // ───────────────────────── layout ─────────────────────────
-const isCollapsed = (id, depth) => (state.coll.has(id) ? state.coll.get(id) : depth >= 3);
+let forceOpen = false;
+const isCollapsed = (id, depth) => !forceOpen && (state.coll.has(id) ? state.coll.get(id) : depth >= 3);
 
 function layout(rootId) {
   const root = get(rootId);
@@ -817,6 +818,96 @@ function openMedia(id) {
   };
   dlg.showModal();
 }
+
+// ───────────────────────── تصدير وطباعة ─────────────────────────
+// Draws the tree on a canvas (light palette, always) so the image/print looks the same on every device.
+function loadImg(src) {
+  return new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
+}
+function wrapName(ctx, text, maxW) {
+  const words = text.split(/\s+/), lines = []; let cur = '';
+  for (const w of words) {
+    const t = cur ? `${cur} ${w}` : w;
+    if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t;
+  }
+  if (cur) lines.push(cur);
+  if (lines.length > 2) { lines.length = 2; lines[1] = lines[1].replace(/\s*\S*$/, '…') || lines[1]; }
+  return lines;
+}
+async function renderTreeCanvas(openAll) {
+  forceOpen = openAll; let L; try { L = layout(state.root); } finally { forceOpen = false; }
+  const C = { bg: '#f5efe4', surface: '#fffdf8', ink: '#2b2723', muted: '#8b8176', line: '#bfb29c', m: '#3d8b86', f: '#c75d78', accent: '#2e6f5d' };
+  const TOP = 90, BOT = 40, W = L.w, H = L.h + TOP + BOT;
+  const sc = Math.min(2, 12000 / Math.max(W, H));
+  const cv = document.createElement('canvas'); cv.width = Math.round(W * sc); cv.height = Math.round(H * sc);
+  const x = cv.getContext('2d'); x.scale(sc, sc); x.direction = 'rtl'; x.textAlign = 'center';
+  const FONT = (w, s) => `${w} ${s}px Cairo, "Segoe UI", Tahoma, sans-serif`;
+  x.fillStyle = C.bg; x.fillRect(0, 0, W, H);
+  x.fillStyle = C.ink; x.font = FONT(700, 30); x.fillText(data.meta.title || 'شجرة العيلة', W / 2, 52);
+  x.translate(0, TOP);
+  x.strokeStyle = C.line; x.lineWidth = 2.2; x.lineJoin = 'round'; x.lineCap = 'round';
+  for (const pl of L.lines) { x.beginPath(); pl.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py))); x.stroke(); }
+  const imgs = new Map();
+  await Promise.all(L.cards.filter((c) => photoSrc(c.p)).map(async (c) => imgs.set(c.p.id, await loadImg(photoSrc(c.p)))));
+  const me = state.me && byId.has(state.me) ? get(state.me) : null;
+  for (const c of L.cards) {
+    const p = c.p, g = p.gender === 'f' ? C.f : C.m, cx = c.x + CARD_W / 2;
+    x.save(); x.globalAlpha = c.ghost ? 0.55 : 1;
+    x.beginPath(); x.roundRect(c.x, c.y, CARD_W, CARD_H, 18);
+    x.shadowColor = 'rgba(60,40,10,.18)'; x.shadowBlur = c.ghost ? 0 : 14; x.shadowOffsetY = 4;
+    x.fillStyle = c.ghost ? C.bg : C.surface; x.fill(); x.shadowColor = 'transparent';
+    if (c.ghost) { x.setLineDash([6, 5]); x.strokeStyle = C.line; x.lineWidth = 2; x.stroke(); x.setLineDash([]); }
+    else { x.save(); x.clip(); x.fillStyle = g; x.fillRect(c.x, c.y, CARD_W, 4); x.restore(); }
+    const ay = c.y + 12 + 35;
+    x.beginPath(); x.arc(cx, ay, 35, 0, 7);
+    x.fillStyle = g + '33'; x.fill();
+    const im = imgs.get(p.id);
+    if (im) {
+      x.save(); x.beginPath(); x.arc(cx, ay, 35, 0, 7); x.clip();
+      const s = Math.min(im.width, im.height); x.drawImage(im, (im.width - s) / 2, (im.height - s) / 2, s, s, cx - 35, ay - 35, 70, 70); x.restore();
+    } else { x.fillStyle = g; x.font = FONT(700, 28); x.textBaseline = 'middle'; x.fillText([...p.name][0] || '؟', cx, ay + 2); x.textBaseline = 'alphabetic'; }
+    x.beginPath(); x.arc(cx, ay, 35, 0, 7); x.strokeStyle = g; x.lineWidth = 3; x.stroke();
+    x.fillStyle = C.ink; x.font = FONT(700, 14.5);
+    wrapName(x, p.name, CARD_W - 18).forEach((ln, i) => x.fillText(ln, cx, c.y + 12 + 70 + 22 + i * 19.5));
+    x.fillStyle = C.muted; x.font = FONT(400, 12);
+    x.fillText(c.ghost ? 'مذكور في فرع تاني' : lifeText(p), cx, c.y + 12 + 70 + 22 + 39 + 14);
+    const rel = me && !c.ghost ? shortRel(me, p) : '';
+    if (rel) {
+      x.font = FONT(600, 11.5); const w = Math.min(CARD_W - 12, x.measureText(rel).width + 20), ry = c.y + CARD_H - 34;
+      x.beginPath(); x.roundRect(cx - w / 2, ry, w, 20, 10); x.fillStyle = p.id === me.id ? C.accent : '#dbe8e2'; x.fill();
+      x.fillStyle = p.id === me.id ? '#fff' : C.accent; x.fillText(rel, cx, ry + 14.5);
+    }
+    x.restore();
+  }
+  x.setTransform(sc, 0, 0, sc, 0, 0); x.fillStyle = C.muted; x.font = FONT(400, 13);
+  x.fillText(`${data.meta.title || 'شجرة العيلة'} · ${new Date().toLocaleDateString('ar-EG')}`, W / 2, H - 14);
+  return cv;
+}
+function openExport() {
+  dlg.innerHTML = `<form><h2>🖨 تصدير الشجرة</h2>
+    <p class="hint">بيتصدّر الفرع المعروض حاليًا (من ${esc(get(state.root).name)}). غيّر الجذر بـ «اعرض شجرته» لو عايز فرع تاني.</p>
+    <label class="chk"><input type="checkbox" id="exOpen" checked> افتح كل الفروع المطوية في التصدير</label>
+    <div class="dlgActions"><button type="button" id="exPng">🖼 تنزيل صورة PNG</button><button type="button" id="exPrint" class="primary">🖨 طباعة / PDF</button><button type="button" data-close>إغلاق</button></div>
+    <p class="hint" id="exStat"></p></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  const run = async (fn) => {
+    const st = $('#exStat', dlg); st.textContent = 'جاري التجهيز…';
+    try { await document.fonts?.ready; await fn(await renderTreeCanvas($('#exOpen', dlg).checked)); st.textContent = ''; }
+    catch (e) { st.textContent = 'فشل التصدير: ' + e.message; }
+  };
+  $('#exPng', dlg).onclick = () => run((cv) => new Promise((res) => cv.toBlob((b) => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'family-tree.png'; a.click(); res();
+  })));
+  $('#exPrint', dlg).onclick = () => run((cv) => new Promise((res) => {
+    const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0';
+    const land = cv.width >= cv.height;
+    f.srcdoc = `<!doctype html><meta charset="utf-8"><style>@page{size:A4 ${land ? 'landscape' : 'portrait'};margin:8mm}html,body{margin:0}img{width:100%;height:auto;display:block;max-height:100vh;object-fit:contain}</style><img src="${cv.toDataURL('image/png')}">`;
+    f.onload = () => setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 60000); res(); }, 300);
+    document.body.appendChild(f);
+  }));
+  dlg.showModal();
+}
+$('#zPrint').onclick = openExport;
 
 // ───────────────────────── أعياد الميلاد والذكرى ─────────────────────────
 function parseDate(s) {
