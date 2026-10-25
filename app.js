@@ -24,7 +24,7 @@ let data = { meta: { title: 'شجرة العيلة' }, people: [] };
 let byId = new Map();
 let kids = new Map();
 let baseText = '';                 // family.json as last loaded/saved (for merge on save)
-const state = { root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set() };
+const state = { root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
 let cfg = { ...detectRepo(), branch: 'main', token: '', ...(store.get('ft-cfg') || {}) };
 let cur = null;                    // current layout
 
@@ -101,7 +101,7 @@ function countDesc(p, seen = new Set()) {
 // ───────────────────────── persistence ─────────────────────────
 const clean = (p) => {
   const o = {};
-  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'details', 'gallery', 'parents', 'spouses']) {
+  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'details', 'gallery', 'media', 'parents', 'spouses']) {
     const v = p[k]; if (v && (!Array.isArray(v) || v.length)) o[k] = v;
   }
   return o;
@@ -112,7 +112,7 @@ function serialize(d) {
 }
 function touch() {
   index(); state.dirty = true;
-  const ok = store.set('ft-draft', { data: JSON.parse(serialize(data)), photos: state.photos, newPhotos: [...state.newPhotos] });
+  const ok = store.set('ft-draft', { data: JSON.parse(serialize(data)), photos: state.photos, newPhotos: [...state.newPhotos], newMedia: [...state.newMedia] });
   if (!ok) toast('تحذير: المسودة المحلية كبيرة ومحفوظتش — احفظ على GitHub قريب');
   render();
 }
@@ -127,6 +127,10 @@ async function load() {
   const draft = store.get('ft-draft');
   if (draft && draft.data) {
     data = draft.data; state.photos = draft.photos || {}; state.newPhotos = new Set(draft.newPhotos || []); state.dirty = true;
+    // media files added but never saved live only in memory — drop dangling references after a reload
+    const lost = new Set(draft.newMedia || []); let n = 0;
+    for (const p of data.people) if (p.media) { const k = p.media.filter((m) => !lost.has(m.src)); n += p.media.length - k.length; p.media = k; }
+    if (n) setTimeout(() => toast(`${n} تسجيل/فيديو ماتحفظوش قبل ما الصفحة تتقفل واتشالوا`), 800);
   }
   index();
   state.root = data.meta.root && byId.has(data.meta.root) ? data.meta.root : (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
@@ -147,7 +151,8 @@ async function gh(path, opts = {}) {
   return r.json();
 }
 const b64 = (s) => { const b = new TextEncoder().encode(s); let t = ''; b.forEach((c) => (t += String.fromCharCode(c))); return btoa(t); };
-const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+const blobB64 = (b) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result.split(',')[1]); r.readAsDataURL(b); });
+const unb64 =(s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
 
 function mergeRemote(remote, base) {         // keep other people's edits made since we loaded
   const key = (p) => JSON.stringify(clean(p));
@@ -174,6 +179,10 @@ async function saveToGitHub() {
     for (const path of state.newPhotos) {
       if (data.people.some((p) => p.photo === path || (p.gallery || []).includes(path)) && state.photos[path]) files.push({ path, content: state.photos[path].split(',')[1] });
     }
+    for (const path of state.newMedia) {
+      const m = state.mblob.get(path);
+      if (m && data.people.some((p) => (p.media || []).some((x) => x.src === path))) files.push({ path, content: await blobB64(m.blob) });
+    }
     const ref = await gh(`${R}/git/ref/heads/${cfg.branch}`);
     const parent = await gh(`${R}/git/commits/${ref.object.sha}`);
     const tree = [];
@@ -184,7 +193,7 @@ async function saveToGitHub() {
     const t = await gh(`${R}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: parent.tree.sha, tree }) });
     const c = await gh(`${R}/git/commits`, { method: 'POST', body: JSON.stringify({ message: 'Update family tree', tree: t.sha, parents: [ref.object.sha] }) });
     await gh(`${R}/git/refs/heads/${cfg.branch}`, { method: 'PATCH', body: JSON.stringify({ sha: c.sha }) });
-    baseText = text; state.dirty = false; state.newPhotos.clear(); store.del('ft-draft');
+    baseText = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
     toast('✓ اتحفظ — الموقع هيتحدّث خلال دقيقة تقريبًا');
     render();
   } catch (e) {
@@ -463,6 +472,7 @@ function renderPanel() {
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
     ${(p.details || []).length ? `<h3>تفاصيل</h3>${p.details.map((d) => `<div class="kv"><b>${esc(d.k)}:</b> ${esc(d.v)}</div>`).join('')}` : ''}
+    ${(p.media || []).length ? `<h3>تسجيلات وفيديو</h3>${p.media.map((m, i) => mediaHTML(m, i, ed)).join('')}` : ''}
     ${(p.gallery || []).length ? `<h3>الصور</h3><div class="gal">${p.gallery.map((g, i) => `<img src="${esc(src(g))}" data-gal="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
     ${sec('الوالدين', par, 'parent')}${sec(p.gender === 'f' ? 'الزوج' : 'الزوجة / الزوج', sp, 'spouse')}${sec('الأبناء', ch, 'child')}${sec('الإخوة', sib)}
     <div class="btnrow">
@@ -474,6 +484,7 @@ function renderPanel() {
       <button data-add="child">+ ابن / بنت</button><button data-add="spouse">+ زوج / زوجة</button>
       <button data-add="parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ أب / أم</button>
       <button data-add="sibling" ${p.parents.length ? '' : 'disabled title="أضف الأب أو الأم الأول"'}>+ أخ / أخت</button></div>
+      <div class="btnrow"><button data-act="media">🎙 صوت / 🎬 فيديو</button></div>
       <div class="btnrow"><button data-act="edit">✎ تعديل البيانات</button><button class="danger" data-act="del">حذف</button></div>` : ''}`;
 }
 panel.addEventListener('click', (e) => {
@@ -481,6 +492,8 @@ panel.addEventListener('click', (e) => {
   const un = t.closest('[data-unlink]');
   if (un) { const [k, oid] = un.dataset.unlink.split(':'); unlink(id, oid, k); return; }
   const go = t.closest('[data-go]'); if (go) { locate(go.dataset.go); return; }
+  const md = t.closest('[data-mdel]');
+  if (md) { if (confirm('تشيل التسجيل/الفيديو ده من الشخص؟')) { get(id).media.splice(+md.dataset.mdel, 1); touch(); } return; }
   const gi = t.closest('[data-gal]'); if (gi) { lightbox(get(id), +gi.dataset.gal); return; }
   const add = t.closest('[data-add]'); if (add) { openForm({ rel: add.dataset.add, anchor: id }); return; }
   const act = t.closest('[data-act]')?.dataset.act;
@@ -488,6 +501,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'root') setRoot(id);
   if (act === 'up') goUp(id);
   if (act === 'cmp') { startCompare(id); return; }
+  if (act === 'media') { openMedia(id); return; }
   if (act === 'edit') openForm({ person: id });
   if (act === 'del') removePerson(id);
 });
@@ -671,6 +685,88 @@ function lightbox(p, i) {
     dlg.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { i = (i + +b.dataset.n + n) % n; show(); }));
   };
   show(); if (!dlg.open) dlg.showModal();
+}
+
+// ───────────────────────── صوت وفيديو ─────────────────────────
+const MAX_VIDEO = 25 * 1024 * 1024, MAX_AUDIO = 12 * 1024 * 1024;
+const msrc = (s) => state.mblob.get(s)?.url || s;
+const ytId = (u) => (u.match(/(?:youtu\.be\/|v=|embed\/|shorts\/)([\w-]{11})/) || [])[1];
+function mediaHTML(m, i, ed) {
+  const del = ed ? `<button class="mx" data-mdel="${i}" title="شيل">×</button>` : '';
+  const title = esc(m.title || (m.t === 'audio' ? 'تسجيل صوتي' : 'فيديو'));
+  let body;
+  if (m.t === 'audio') body = `<audio controls preload="none" src="${esc(msrc(m.src))}"></audio>`;
+  else if (m.t === 'link') {
+    const y = ytId(m.src);
+    body = y ? `<iframe src="https://www.youtube-nocookie.com/embed/${y}" allowfullscreen loading="lazy"></iframe>` : `<a href="${esc(m.src)}" target="_blank" rel="noopener">${esc(m.src)}</a>`;
+  } else body = `<video controls preload="metadata" playsinline src="${esc(msrc(m.src))}"></video>`;
+  return `<div class="mi"><div class="mt">${m.t === 'audio' ? '🎙' : '🎬'} ${title}${del}</div>${body}</div>`;
+}
+function addMedia(id, item, blob, ext) {
+  const p = get(id); p.media = p.media || [];
+  if (blob) {
+    const path = `media/${id}-${Date.now().toString(36)}.${ext}`;
+    state.mblob.set(path, { blob, url: URL.createObjectURL(blob) }); state.newMedia.add(path); item.src = path;
+  }
+  p.media.push(item); touch();
+}
+function openMedia(id) {
+  const p = get(id); let rec = null, stream = null, chunks = [], timer = 0, recBlob = null, recExt = 'webm', secs = 0, added = 0;
+  dlg.innerHTML = `<form id="mf"><h2>صوت وفيديو — ${esc(p.name)}</h2>
+    <div class="mbox"><b>🎙 تسجيل صوتي</b>
+      <div class="btnrow"><button type="button" id="recBtn" class="primary">● ابدأ التسجيل</button><span id="recT" class="hint" style="align-self:center"></span></div>
+      <audio id="recPrev" controls hidden></audio></div>
+    <label>عنوان (اختياري)<input id="mTitle" placeholder="مثال: بيحكي عن أيام زمان"></label>
+    <div class="btnrow"><button type="button" id="addRec" disabled>أضف التسجيل للشخص</button></div>
+    <div class="mbox"><b>أو ارفع حاجة جاهزة</b><div class="btnrow">
+      <button type="button" id="upA">ملف صوت</button><button type="button" id="upV">🎬 ملف فيديو</button><button type="button" id="lnk">🔗 رابط فيديو</button></div>
+      <input type="file" id="fA" accept="audio/*" hidden><input type="file" id="fV" accept="video/*" hidden></div>
+    <p class="hint">الفيديو لحد 25MB والصوت لحد 12MB (حدود GitHub). لفيديو أكبر ارفعه على يوتيوب (Unlisted) وحط الرابط. التسجيل بيحتاج إذن الميكروفون.</p>
+    <p class="hint" id="mStat"></p>
+    <div class="dlgActions"><button type="button" data-close class="primary">تم</button></div></form>`;
+  const q = (s) => $(s, dlg), title = () => q('#mTitle').value.trim();
+  const stat = () => (q('#mStat').textContent = added ? `اتضاف ${added} — متنساش تدوس «حفظ» فوق لما تخلص` : '');
+  const cleanup = () => { clearInterval(timer); stream?.getTracks().forEach((t) => t.stop()); if (rec && rec.state !== 'inactive') rec.stop(); };
+  dlg.addEventListener('close', cleanup, { once: true });
+  q('[data-close]').onclick = () => dlg.close();
+  q('#recBtn').onclick = async () => {
+    if (rec && rec.state === 'recording') { rec.stop(); return; }
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { return toast('مقدرتش أوصل للميكروفون — اسمح بالإذن من المتصفح'); }
+    const mt = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'].find((t) => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || '';
+    recExt = mt.includes('mp4') ? 'm4a' : mt.includes('ogg') ? 'ogg' : 'webm';
+    rec = new MediaRecorder(stream, mt ? { mimeType: mt } : undefined); chunks = []; secs = 0;
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = () => {
+      clearInterval(timer); stream.getTracks().forEach((t) => t.stop());
+      recBlob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+      const a = q('#recPrev'); a.src = URL.createObjectURL(recBlob); a.hidden = false;
+      q('#recBtn').textContent = '● تسجيل من جديد'; q('#addRec').disabled = false;
+    };
+    rec.start(); q('#recBtn').textContent = '■ إيقاف'; q('#addRec').disabled = true; q('#recPrev').hidden = true;
+    timer = setInterval(() => { secs++; q('#recT').textContent = `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`; if (secs >= 600) rec.stop(); }, 1000);
+  };
+  q('#addRec').onclick = () => {
+    if (!recBlob) return;
+    if (recBlob.size > MAX_AUDIO) return toast('التسجيل كبير — اعمله أقصر من كده');
+    addMedia(id, { t: 'audio', title: title() }, recBlob, recExt);
+    recBlob = null; q('#recPrev').hidden = true; q('#addRec').disabled = true; q('#recT').textContent = ''; q('#mTitle').value = ''; added++; stat();
+  };
+  const upload = (input, kind, max) => {
+    input.onchange = () => {
+      const f = input.files[0]; input.value = ''; if (!f) return;
+      if (f.size > max) return toast(`الملف أكبر من ${Math.round(max / 1048576)}MB`);
+      addMedia(id, { t: kind, title: title() || f.name.replace(/\.[^.]+$/, '') }, f, (f.name.match(/\.(\w{2,4})$/) || [, kind === 'audio' ? 'webm' : 'mp4'])[1].toLowerCase());
+      q('#mTitle').value = ''; added++; stat();
+    };
+  };
+  upload(q('#fA'), 'audio', MAX_AUDIO); upload(q('#fV'), 'video', MAX_VIDEO);
+  q('#upA').onclick = () => q('#fA').click(); q('#upV').onclick = () => q('#fV').click();
+  q('#lnk').onclick = () => {
+    const u = (prompt('الصق رابط الفيديو (يوتيوب أو غيره):') || '').trim();
+    if (!/^https?:\/\//i.test(u)) { if (u) toast('الرابط لازم يبدأ بـ https://'); return; }
+    addMedia(id, { t: 'link', title: title() || 'فيديو', src: u }); q('#mTitle').value = ''; added++; stat();
+  };
+  dlg.showModal();
 }
 
 // ───────────────────────── صلة القرابة ─────────────────────────

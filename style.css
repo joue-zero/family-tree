@@ -190,3 +190,14 @@ dialog:has(.lb) { width: min(900px, 96vw); }
 .pair { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); line-height: 1.9; font-size: 14px; }
 .pn { font-weight: 700; color: var(--accent); }
 @media (max-width: 700px) { #btnCmp { font-size: 0; } #btnCmp::before { content: '⚖'; font-size: 16px; } }
+
+/* audio / video */
+.mi { margin: 8px 0; }
+.mt { font-size: 13px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.mx { padding: 0 8px; border-radius: 999px; }
+.mi audio, .mi video, .mi iframe { width: 100%; border-radius: 12px; }
+.mi iframe { aspect-ratio: 16 / 9; border: 0; }
+.mi video { max-height: 260px; background: #000; }
+.mi a { word-break: break-all; font-size: 13px; }
+.mbox { border: 1px dashed var(--line); border-radius: 14px; padding: 10px 12px; margin-top: 10px; }
+.mbox audio { width: 100%; margin-top: 8px; }

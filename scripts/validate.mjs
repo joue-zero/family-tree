@@ -31,6 +31,10 @@ for (const p of people) {
   if ((p.parents ?? []).length > 2) errors.push(`${p.id}: more than 2 parents`);
   for (const g of p.gallery ?? []) if (!existsSync(g)) errors.push(`${p.id}: missing gallery file ${g}`);
   for (const d of p.details ?? []) if (typeof d.k !== 'string' || typeof d.v !== 'string') errors.push(`${p.id}: bad details entry`);
+  for (const m of p.media ?? []) {
+    if (!['audio', 'video', 'link'].includes(m.t) || typeof m.src !== 'string') errors.push(`${p.id}: bad media entry`);
+    else if (m.t !== 'link' && !existsSync(m.src)) errors.push(`${p.id}: missing media file ${m.src}`);
+  }
   if (p.photo && !existsSync(p.photo)) errors.push(`${p.id}: missing photo file ${p.photo}`);
 }
 
