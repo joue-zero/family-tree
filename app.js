@@ -337,11 +337,41 @@ function render(opts = {}) {
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp();
+  renderPanel(); renderCmp(); drawMini();
 }
 
 // pan & zoom ---------------------------------------------------
-function applyT(smooth) { stage.classList.toggle('smooth', !!smooth); stage.style.transform = `translate(${T.x}px,${T.y}px) scale(${T.k})`; }
+function applyT(smooth) { stage.classList.toggle('smooth', !!smooth); stage.style.transform = `translate(${T.x}px,${T.y}px) scale(${T.k})`; drawMini(); }
+
+// minimap: only for big trees; tap/drag to jump
+const mini = $('#mini'), mctx = mini.getContext('2d');
+let miniM = null;
+function drawMini() {
+  if (!cur || cur.cards.length < 12 || !$('#panel').hidden || state.cmp) { mini.hidden = true; return; }
+  mini.hidden = false;
+  const W = mini.width, H = mini.height, s = Math.min((W - 8) / cur.w, (H - 8) / cur.h);
+  const ox = (W - cur.w * s) / 2, oy = (H - cur.h * s) / 2, cs = getComputedStyle(document.documentElement);
+  const col = (v) => cs.getPropertyValue(v).trim();
+  mctx.clearRect(0, 0, W, H);
+  for (const c of cur.cards) {
+    if (c.ghost) continue;
+    mctx.fillStyle = c.p.gender === 'f' ? col('--f') : col('--m');
+    mctx.fillRect(ox + c.x * s, oy + c.y * s, Math.max(2, CARD_W * s), Math.max(2, CARD_H * s));
+  }
+  mctx.strokeStyle = col('--accent'); mctx.lineWidth = 2;
+  mctx.strokeRect(ox - (T.x / T.k) * s, oy - (T.y / T.k) * s, (view.clientWidth / T.k) * s, (view.clientHeight / T.k) * s);
+  miniM = { s, ox, oy };
+}
+function miniJump(e) {
+  if (!miniM) return;
+  const r = mini.getBoundingClientRect(), k = mini.width / r.width;
+  const sx = ((e.clientX - r.left) * k - miniM.ox) / miniM.s, sy = ((e.clientY - r.top) * k - miniM.oy) / miniM.s;
+  T.x = view.clientWidth / 2 - sx * T.k; T.y = view.clientHeight / 2 - sy * T.k; applyT(false);
+}
+mini.addEventListener('pointerdown', (e) => { e.stopPropagation(); mini.setPointerCapture(e.pointerId); miniJump(e); });
+mini.addEventListener('pointermove', (e) => { if (e.buttons || e.pressure) miniJump(e); });
+// keep the main pan handler from grabbing minimap gestures
+mini.addEventListener('pointerup', (e) => e.stopPropagation());
 const panelW = () => (!$('#panel').hidden && innerWidth > 700 ? 340 : 0);
 function fit() {
   if (!cur) return;
@@ -940,5 +970,12 @@ function openSettings() {
 dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
 addEventListener('beforeunload', (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ''; } });
 addEventListener('resize', () => cur && fit());
+
+// PWA: offline cache + install button
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+let installEv = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEv = e; $('#btnInstall').hidden = false; });
+$('#btnInstall').onclick = async () => { if (!installEv) return; installEv.prompt(); await installEv.userChoice; installEv = null; $('#btnInstall').hidden = true; };
+addEventListener('appinstalled', () => { $('#btnInstall').hidden = true; });
 
 load();

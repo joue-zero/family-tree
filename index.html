@@ -4,6 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>شجرة العيلة</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2e6f5d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="شجرة العيلة">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap">
 <link rel="stylesheet" href="style.css">
@@ -21,6 +28,7 @@
     <button id="btnCmp" title="صلة القرابة بين أشخاص">⚖ صلة القرابة</button>
     <button id="btnEdit" title="وضع التعديل">✎ تعديل</button>
     <button id="btnSave" class="primary" hidden>حفظ <b id="dirtyMark">●</b></button>
+    <button id="btnInstall" hidden>📲 ثبّت</button>
     <button id="btnSettings" title="الإعدادات">⚙</button>
   </div>
 </header>
@@ -32,6 +40,7 @@
     <button id="zOut" title="تصغير">−</button>
     <button id="zFit" title="ملاءمة الشاشة">⤢</button>
   </div>
+  <canvas id="mini" width="170" height="116" hidden></canvas>
   <div id="empty" hidden>
     <p>مفيش أي أشخاص لسه.</p>
     <button id="btnFirst" class="primary">+ ابدأ بأول شخص</button>
