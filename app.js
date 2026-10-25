@@ -1,0 +1,809 @@
+'use strict';
+/* شجرة العيلة — static app. Data lives in data/family.json (committed to the repo). */
+
+// ───────────────────────── helpers ─────────────────────────
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = () => 'p' + Math.random().toString(36).slice(2, 8);
+const norm = (s) => (s || '').toLowerCase().replace(/[ً-ٟـ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').trim();
+const yearOf = (p) => parseInt((p.birth || '').match(/\d{4}/)?.[0]) || 9999;
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+  del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+};
+let toastTimer;
+function toast(msg) {
+  const t = $('#toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+// ───────────────────────── state ─────────────────────────
+const CARD_W = 148, CARD_H = 168, GAP_X = 20, GAP_Y = 76, SP_GAP = 16, PAD = 50;
+let data = { meta: { title: 'شجرة العيلة' }, people: [] };
+let byId = new Map();
+let kids = new Map();
+let baseText = '';                 // family.json as last loaded/saved (for merge on save)
+const state = { root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set() };
+let cfg = { ...detectRepo(), branch: 'main', token: '', ...(store.get('ft-cfg') || {}) };
+let cur = null;                    // current layout
+
+function detectRepo() {
+  const m = location.hostname.match(/^(.+)\.github\.io$/);
+  return m ? { owner: m[1], repo: location.pathname.split('/')[1] || `${m[1]}.github.io` } : {};
+}
+
+// ───────────────────────── data model ─────────────────────────
+function index() {
+  byId = new Map(data.people.map((p) => [p.id, p]));
+  for (const p of data.people) {
+    p.parents = (p.parents || []).filter((i) => byId.has(i) && i !== p.id).slice(0, 2);
+    p.spouses = (p.spouses || []).filter((i) => byId.has(i) && i !== p.id);
+  }
+  for (const p of data.people) {
+    for (const s of p.spouses) { const o = byId.get(s); if (!o.spouses.includes(p.id)) o.spouses.push(p.id); }
+    if (p.parents.length === 2) {
+      const [a, b] = p.parents.map((i) => byId.get(i));
+      if (!a.spouses.includes(b.id)) a.spouses.push(b.id);
+      if (!b.spouses.includes(a.id)) b.spouses.push(a.id);
+    }
+  }
+  kids = new Map();
+  for (const p of data.people) for (const par of p.parents) {
+    if (!kids.has(par)) kids.set(par, []);
+    kids.get(par).push(p);
+  }
+  for (const arr of kids.values()) arr.sort((a, b) => yearOf(a) - yearOf(b));
+}
+const get = (id) => byId.get(id);
+const src = (path) => (path && (state.photos[path] || path)) || '';
+const photoSrc = (p) => src(p.photo);
+const lifeText = (p) => {
+  const d = p.death && p.death !== '?' ? p.death : '';
+  if (p.birth && d) return `${p.birth} – ${d}`;
+  if (p.birth) return p.death ? `${p.birth} –` : p.birth;
+  return d ? `– ${d}` : '';
+};
+function lineage(p) {
+  const out = []; let c = p;
+  for (let i = 0; i < 3; i++) {
+    const f = c.parents.map(get).find((x) => x.gender === 'm') || c.parents.map(get)[0];
+    if (!f) break;
+    const w = f.name.trim().split(/\s+/);
+    out.push(/^(عبد|أبو|ابو|أم)$/.test(w[0]) && w[1] ? `${w[0]} ${w[1]}` : w[0]); c = f;
+  }
+  return out.length ? (p.gender === 'f' ? 'بنت ' : 'ابن ') + out.join(' بن ') : '';
+}
+function siblings(p) {
+  const s = new Map();
+  for (const par of p.parents) for (const c of kids.get(par) || []) if (c.id !== p.id) s.set(c.id, c);
+  return [...s.values()];
+}
+const parentPick = (p) => { const ps = p.parents.map(get); return ps.find((x) => x.gender === 'm') || ps[0] || null; };
+function topAncestor(p) {
+  const seen = new Set(); let c = p;
+  while (!seen.has(c.id)) { seen.add(c.id); const up = parentPick(c); if (!up) break; c = up; }
+  return c;
+}
+function rootFor(p) {
+  if (!p.parents.length) {
+    const sp = p.spouses.map(get).find((s) => s.parents.length);
+    if (sp) return topAncestor(sp);
+  }
+  return topAncestor(p);
+}
+function countDesc(p, seen = new Set()) {
+  if (seen.has(p.id)) return 0; seen.add(p.id);
+  let n = 1; for (const c of kids.get(p.id) || []) n += countDesc(c, seen);
+  return n;
+}
+
+// ───────────────────────── persistence ─────────────────────────
+const clean = (p) => {
+  const o = {};
+  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'details', 'gallery', 'parents', 'spouses']) {
+    const v = p[k]; if (v && (!Array.isArray(v) || v.length)) o[k] = v;
+  }
+  return o;
+};
+function serialize(d) {
+  const lines = d.people.map((p) => '    ' + JSON.stringify(clean(p)));
+  return `{\n  "meta": ${JSON.stringify(d.meta)},\n  "people": [\n${lines.join(',\n')}\n  ]\n}\n`;
+}
+function touch() {
+  index(); state.dirty = true;
+  const ok = store.set('ft-draft', { data: JSON.parse(serialize(data)), photos: state.photos, newPhotos: [...state.newPhotos] });
+  if (!ok) toast('تحذير: المسودة المحلية كبيرة ومحفوظتش — احفظ على GitHub قريب');
+  render();
+}
+async function load() {
+  try {
+    const r = await fetch('data/family.json', { cache: 'no-cache' });
+    baseText = await r.text();
+    data = JSON.parse(baseText);
+  } catch (e) {
+    toast('مقدرتش أقرأ data/family.json — شغّل الموقع من سيرفر (مش فتح الملف مباشرة)');
+  }
+  const draft = store.get('ft-draft');
+  if (draft && draft.data) {
+    data = draft.data; state.photos = draft.photos || {}; state.newPhotos = new Set(draft.newPhotos || []); state.dirty = true;
+  }
+  index();
+  state.root = data.meta.root && byId.has(data.meta.root) ? data.meta.root : (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
+  $('#title').textContent = data.meta.title || 'شجرة العيلة';
+  document.title = data.meta.title || 'شجرة العيلة';
+  render({ fit: true });
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h && byId.has(h)) setTimeout(() => locate(h), 50);
+}
+
+// GitHub API ---------------------------------------------------
+async function gh(path, opts = {}) {
+  const r = await fetch('https://api.github.com' + path, {
+    ...opts,
+    headers: { Authorization: 'Bearer ' + cfg.token, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+  });
+  if (!r.ok) throw new Error(`GitHub ${r.status}: ${(await r.text()).slice(0, 160)}`);
+  return r.json();
+}
+const b64 = (s) => { const b = new TextEncoder().encode(s); let t = ''; b.forEach((c) => (t += String.fromCharCode(c))); return btoa(t); };
+const unb64 = (s) => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/\n/g, '')), (c) => c.charCodeAt(0)));
+
+function mergeRemote(remote, base) {         // keep other people's edits made since we loaded
+  const key = (p) => JSON.stringify(clean(p));
+  const B = new Map(base.people.map((p) => [p.id, key(p)]));
+  const O = new Map(data.people.map((p) => [p.id, p]));
+  const out = [...data.people];
+  for (const rp of remote.people) {
+    const o = O.get(rp.id);
+    if (!o) { if (!B.has(rp.id)) out.push(rp); }
+    else if (key(o) === B.get(rp.id) && key(rp) !== B.get(rp.id)) out[out.indexOf(o)] = rp;
+  }
+  data.people = out;
+}
+async function saveToGitHub() {
+  if (!cfg.token || !cfg.owner || !cfg.repo) { toast('لازم تضبط الريبو والـ Token الأول'); return openSettings(); }
+  const btn = $('#btnSave'); btn.disabled = true; btn.firstChild.textContent = 'جاري الحفظ… ';
+  try {
+    const R = `/repos/${cfg.owner}/${cfg.repo}`;
+    const remoteFile = await gh(`${R}/contents/data/family.json?ref=${cfg.branch}`);
+    const remoteText = unb64(remoteFile.content);
+    if (remoteText !== baseText) { mergeRemote(JSON.parse(remoteText), JSON.parse(baseText || remoteText)); index(); toast('اتدمجت تعديلات تانية من حد تاني'); }
+    const text = serialize(data);
+    const files = [{ path: 'data/family.json', content: b64(text) }];
+    for (const path of state.newPhotos) {
+      if (data.people.some((p) => p.photo === path || (p.gallery || []).includes(path)) && state.photos[path]) files.push({ path, content: state.photos[path].split(',')[1] });
+    }
+    const ref = await gh(`${R}/git/ref/heads/${cfg.branch}`);
+    const parent = await gh(`${R}/git/commits/${ref.object.sha}`);
+    const tree = [];
+    for (const f of files) {
+      const blob = await gh(`${R}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: f.content, encoding: 'base64' }) });
+      tree.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
+    }
+    const t = await gh(`${R}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: parent.tree.sha, tree }) });
+    const c = await gh(`${R}/git/commits`, { method: 'POST', body: JSON.stringify({ message: 'Update family tree', tree: t.sha, parents: [ref.object.sha] }) });
+    await gh(`${R}/git/refs/heads/${cfg.branch}`, { method: 'PATCH', body: JSON.stringify({ sha: c.sha }) });
+    baseText = text; state.dirty = false; state.newPhotos.clear(); store.del('ft-draft');
+    toast('✓ اتحفظ — الموقع هيتحدّث خلال دقيقة تقريبًا');
+    render();
+  } catch (e) {
+    toast('فشل الحفظ: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.firstChild.textContent = 'حفظ ';
+  }
+}
+
+// ───────────────────────── layout ─────────────────────────
+const isCollapsed = (id, depth) => (state.coll.has(id) ? state.coll.get(id) : depth >= 3);
+
+function layout(rootId) {
+  const root = get(rootId);
+  const desc = new Set();
+  (function w(p) { if (desc.has(p.id)) return; desc.add(p.id); (kids.get(p.id) || []).forEach(w); })(root);
+  const placed = new Set(), spPlaced = new Set();
+
+  function build(p, depth) {
+    placed.add(p.id);
+    const u = { p, depth, L: [], R: [], unk: { kids: [] } };
+    p.spouses.forEach((sid, i) => {
+      const s = get(sid);
+      const ghost = desc.has(sid) || spPlaced.has(sid);
+      spPlaced.add(sid);
+      (i % 2 ? u.L : u.R).push({ p: s, ghost, kids: [] });
+    });
+    const mine = (kids.get(p.id) || []).filter((c) => !placed.has(c.id));
+    u.total = mine.length;
+    u.collapsed = mine.length > 0 && isCollapsed(p.id, depth);
+    if (u.collapsed) { const seen = new Set(); u.hidden = mine.reduce((n, c) => n + countDesc(c, seen), 0); }
+    else for (const c of mine) {
+      if (placed.has(c.id)) continue;
+      const other = c.parents.find((x) => x !== p.id);
+      const g = [...u.L, ...u.R].find((e) => e.p.id === other) || u.unk;
+      g.kids.push(build(c, depth + 1));
+    }
+    return u;
+  }
+  const groupsOf = (u) => [...u.L.slice().reverse(), u.unk, ...u.R];
+
+  function measure(u) {
+    const n = 1 + u.L.length + u.R.length;
+    u.uw = n * CARD_W + (n - 1) * SP_GAP;
+    let tw = 0, cnt = 0;
+    for (const g of groupsOf(u)) for (const k of g.kids) { measure(k); tw += k.w; cnt++; }
+    u.kw = tw + Math.max(0, cnt - 1) * GAP_X;
+    u.w = Math.max(u.uw, u.kw);
+  }
+
+  const cards = [], lines = [], byPerson = new Map();
+  function place(u, left, y, isRoot) {
+    const x0 = left + u.w / 2 - u.uw / 2;
+    const row = [...u.L.slice().reverse(), null, ...u.R];
+    row.forEach((e, i) => {
+      const self = e === null, x = x0 + i * (CARD_W + SP_GAP), p = self ? u.p : e.p;
+      const c = { x, y, p, ghost: !self && e.ghost, main: self, u };
+      c.key = c.ghost ? `g:${u.p.id}:${p.id}` : p.id;
+      c.up = !c.ghost && p.parents.length > 0 && (isRoot || !self);
+      if (self) { u.pcx = x + CARD_W / 2; c.tog = u.total ? { collapsed: u.collapsed, n: u.hidden } : null; }
+      else e.cx = x + CARD_W / 2;
+      if (!c.ghost) byPerson.set(p.id, c);
+      cards.push(c);
+    });
+    const bottom = y + CARD_H, cy = y + CARD_H + GAP_Y, yb = bottom + 46;
+    let kx = left + (u.w - u.kw) / 2;
+    for (const g of groupsOf(u)) for (const k of g.kids) { place(k, kx, cy, false); kx += k.w + GAP_X; }
+    [u.L, u.R].forEach((side) => side.forEach((e, rank) => {
+      const ym = bottom + 12 + rank * 8;
+      lines.push([[u.pcx, bottom], [u.pcx, ym], [e.cx, ym], [e.cx, bottom]]);
+      e.drop = [(u.pcx + e.cx) / 2, ym];
+    }));
+    u.unk.drop = [u.pcx, bottom];
+    for (const g of groupsOf(u)) {
+      if (!g.kids.length) continue;
+      const [dx, dy] = g.drop, xs = [dx, ...g.kids.map((k) => k.pcx)];
+      lines.push([[dx, dy], [dx, yb]]);
+      lines.push([[Math.min(...xs), yb], [Math.max(...xs), yb]]);
+      for (const k of g.kids) lines.push([[k.pcx, yb], [k.pcx, cy]]);
+    }
+  }
+
+  const tree = build(root, 0);
+  measure(tree);
+  place(tree, 0, 0, true);
+  const W = tree.w, H = Math.max(...cards.map((c) => c.y)) + CARD_H;
+  for (const c of cards) { c.x = W - c.x - CARD_W + PAD; c.y += PAD; }       // mirror for RTL
+  const L2 = lines.map((pl) => pl.map(([x, y]) => [W - x + PAD, y + PAD]));
+  return { cards, lines: L2, w: W + PAD * 2, h: H + PAD * 2, byPerson };
+}
+
+// ───────────────────────── render ─────────────────────────
+const view = $('#view'), stage = $('#stage'), cardsBox = $('#cards'), svg = $('#lines');
+const cardEls = new Map();
+let T = { k: 1, x: 0, y: 0 };
+
+function cardHTML(c) {
+  const p = c.p, ph = photoSrc(p);
+  const av = ph ? `<img src="${esc(ph)}" alt="" draggable="false">` : `<span>${esc([...p.name][0] || '؟')}</span>`;
+  const note = c.ghost ? '<div class="ghost-note">مذكور في فرع تاني ↗</div>' : `<div class="yr">${esc(lifeText(p))}</div>`;
+  const tog = c.tog ? `<button class="tg" data-act="tog" title="${c.tog.collapsed ? 'فتح' : 'طيّ'} الأبناء">${c.tog.collapsed ? '+' + c.tog.n : '−'}</button>` : '';
+  const up = c.up ? '<button class="bdg up" data-act="up" title="العيلة الأصلية (فوق)">⇡</button>' : '';
+  const pk = state.picks.indexOf(p.id);
+  const pkb = pk >= 0 && !c.ghost ? `<span class="pk">${pk + 1}</span>` : '';
+  return `<div class="av">${av}</div><div class="nm">${esc(p.name)}</div>${note}${up}${tog}${pkb}`;
+}
+
+function render(opts = {}) {
+  const empty = !state.root || !byId.has(state.root);
+  $('#empty').hidden = !empty;
+  $('#btnSave').hidden = !state.dirty;
+  $('#btnEdit').classList.toggle('on', state.edit);
+  $('#btnUp').disabled = empty || !get(state.root).parents.length;
+  if (empty) { cardsBox.innerHTML = ''; svg.innerHTML = ''; cardEls.clear(); cur = null; renderPanel(); return; }
+  cur = layout(state.root);
+  svg.setAttribute('width', cur.w); svg.setAttribute('height', cur.h);
+  svg.style.animation = 'none'; void svg.getBoundingClientRect(); svg.style.animation = '';
+  svg.innerHTML = cur.lines.map((pl) => `<path d="M${pl.map((p) => p.join(' ')).join('L')}"/>`).join('');
+  stage.style.width = cur.w + 'px'; stage.style.height = cur.h + 'px';
+
+  const keep = new Set();
+  for (const c of cur.cards) {
+    keep.add(c.key);
+    let el = cardEls.get(c.key);
+    if (!el) {
+      el = document.createElement('div'); el.style.opacity = 0;
+      el.style.transform = `translate(${c.x}px,${c.y}px)`;
+      cardsBox.appendChild(el); cardEls.set(c.key, el);
+      requestAnimationFrame(() => requestAnimationFrame(() => (el.style.opacity = '')));
+    }
+    el.dataset.id = c.p.id; el.dataset.key = c.key;
+    el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}`;
+    el.innerHTML = cardHTML(c);
+    el.style.transform = `translate(${c.x}px,${c.y}px)`;
+  }
+  for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
+  if (opts.fit) fit();
+  renderPanel(); renderCmp();
+}
+
+// pan & zoom ---------------------------------------------------
+function applyT(smooth) { stage.classList.toggle('smooth', !!smooth); stage.style.transform = `translate(${T.x}px,${T.y}px) scale(${T.k})`; }
+const panelW = () => (!$('#panel').hidden && innerWidth > 700 ? 340 : 0);
+function fit() {
+  if (!cur) return;
+  const vw = view.clientWidth - panelW(), vh = view.clientHeight;
+  T.k = Math.max(0.55, Math.min(1, vw / cur.w, vh / cur.h));
+  const rc = cur.byPerson.get(state.root);
+  T.x = panelW() + (cur.w * T.k <= vw ? (vw - cur.w * T.k) / 2 : vw / 2 - (rc.x + CARD_W / 2) * T.k);
+  T.y = cur.h * T.k <= vh ? (vh - cur.h * T.k) / 2 : 10;
+  applyT(true);
+}
+function centerOn(c) {
+  const vw = view.clientWidth - panelW(), vh = view.clientHeight;
+  T.x = panelW() + vw / 2 - (c.x + CARD_W / 2) * T.k; T.y = vh / 2 - (c.y + CARD_H / 2) * T.k; applyT(true);
+}
+function zoomAt(f, cx, cy) {
+  const k = Math.min(2.5, Math.max(0.2, T.k * f)), r = k / T.k;
+  T.x = cx - (cx - T.x) * r; T.y = cy - (cy - T.y) * r; T.k = k; applyT(false);
+}
+const ptrs = new Map(); let moved = false, pinchD = 0;
+view.addEventListener('pointerdown', (e) => {
+  if (e.target.closest('#zoom, #empty button')) return;
+  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); moved = false; view.classList.add('grabbing');
+  if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinchD = Math.hypot(a.x - b.x, a.y - b.y); }
+});
+addEventListener('pointermove', (e) => {
+  const p = ptrs.get(e.pointerId); if (!p) return;
+  if (ptrs.size === 2) {
+    ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const [a, b] = [...ptrs.values()], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (pinchD) { const r = view.getBoundingClientRect(); zoomAt(d / pinchD, (a.x + b.x) / 2 - r.left, (a.y + b.y) / 2 - r.top); }
+    pinchD = d; moved = true; return;
+  }
+  const dx = e.clientX - p.x, dy = e.clientY - p.y;
+  if (!moved && Math.hypot(dx, dy) < 6) return;
+  moved = true; p.x = e.clientX; p.y = e.clientY; T.x += dx; T.y += dy; applyT(false);
+});
+const endPtr = (e) => { ptrs.delete(e.pointerId); pinchD = 0; if (!ptrs.size) view.classList.remove('grabbing'); };
+addEventListener('pointerup', endPtr); addEventListener('pointercancel', endPtr);
+view.addEventListener('wheel', (e) => {
+  e.preventDefault(); const r = view.getBoundingClientRect();
+  zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top);
+}, { passive: false });
+const zc = (f) => zoomAt(f, view.clientWidth / 2, view.clientHeight / 2);
+$('#zIn').onclick = () => zc(1.25); $('#zOut').onclick = () => zc(0.8); $('#zFit').onclick = fit;
+
+// card interactions -------------------------------------------
+cardsBox.addEventListener('click', (e) => {
+  if (moved) return;
+  const el = e.target.closest('.card'); if (!el) return;
+  const id = el.dataset.id, act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'tog') {
+    const c = cur.byPerson.get(id); state.coll.set(id, !c.tog.collapsed); render(); return;
+  }
+  if (state.cmp) { togglePick(id); return; }
+  if (act === 'up') { goUp(id); return; }
+  if (el.classList.contains('ghost')) { locate(id); return; }
+  select(id);
+});
+function select(id) {
+  state.selected = id;
+  if (id) history.replaceState(null, '', '#' + id); else history.replaceState(null, '', location.pathname);
+  render();
+}
+function pulse(id) {
+  const c = cur?.byPerson.get(id); if (!c) return;
+  const el = cardEls.get(c.key); if (!el) return;
+  el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
+}
+function locate(id) {
+  const p = get(id); if (!p) return;
+  state.selected = id; history.replaceState(null, '', '#' + id);
+  if (!cur?.byPerson.has(id)) {
+    state.root = rootFor(p).id; state.coll.clear();
+    render();
+  }
+  if (!cur.byPerson.has(id)) {                       // hidden under collapsed branches → open the path
+    const seen = new Set(), q = [p];
+    while (q.length) { const x = q.pop(); if (seen.has(x.id)) continue; seen.add(x.id); state.coll.set(x.id, false); x.parents.forEach((i) => q.push(get(i))); }
+    state.coll.set(id, state.coll.get(id) ?? true);
+    render();
+  } else render();
+  const c = cur.byPerson.get(id);
+  if (c) { setTimeout(() => { centerOn(c); pulse(id); }, 60); }
+}
+function goUp(id) {
+  const par = parentPick(get(id)); if (!par) return;
+  state.root = par.id; state.coll.clear(); state.selected = id; render();
+  const c = cur.byPerson.get(id); if (c) centerOn(c); else fit();
+}
+$('#btnUp').onclick = () => { const r = get(state.root); const par = r && parentPick(r); if (par) { state.root = par.id; state.coll.clear(); render({ fit: true }); } };
+function setRoot(id) { state.root = id; state.coll.clear(); render({ fit: true }); }
+
+// search --------------------------------------------------------
+const sIn = $('#search'), sOut = $('#results'); let sSel = 0, sList = [];
+function doSearch() {
+  const q = norm(sIn.value); if (!q) { sOut.hidden = true; return; }
+  sList = data.people.filter((p) => norm(p.name + ' ' + (p.nick || '')).includes(q)).slice(0, 8); sSel = 0;
+  sOut.innerHTML = sList.length ? sList.map((p, i) => `<li data-id="${p.id}" class="${i ? '' : 'on'}"><div class="av" style="width:34px;height:34px;font-size:15px;border-width:2px;--g:var(--${p.gender === 'f' ? 'f' : 'm'})">${photoSrc(p) ? `<img src="${esc(photoSrc(p))}">` : esc([...p.name][0])}</div><div>${esc(p.name)}<small>${esc(lineage(p) || lifeText(p))}</small></div></li>`).join('') : '<li>مفيش نتايج</li>';
+  sOut.hidden = false;
+}
+sIn.addEventListener('input', doSearch);
+sIn.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && sList[sSel]) pickSearch(sList[sSel].id);
+  if (e.key === 'Escape') { sOut.hidden = true; sIn.blur(); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    sSel = (sSel + (e.key === 'ArrowDown' ? 1 : -1) + sList.length) % (sList.length || 1);
+    [...sOut.children].forEach((li, i) => li.classList.toggle('on', i === sSel)); e.preventDefault();
+  }
+});
+sOut.addEventListener('click', (e) => { const li = e.target.closest('li[data-id]'); if (li) pickSearch(li.dataset.id); });
+function pickSearch(id) { sOut.hidden = true; sIn.value = ''; locate(id); }
+document.addEventListener('click', (e) => { if (!e.target.closest('#searchwrap')) sOut.hidden = true; });
+
+// ───────────────────────── detail panel ─────────────────────────
+const panel = $('#panel');
+const chip = (p, extra = '') => `<span class="chip" data-go="${p.id}"><span class="av" style="--g:var(--${p.gender === 'f' ? 'f' : 'm'})">${photoSrc(p) ? `<img src="${esc(photoSrc(p))}">` : esc([...p.name][0])}</span>${esc(p.name)}${extra}</span>`;
+function renderPanel() {
+  const p = state.selected && get(state.selected);
+  if (!p || state.cmp) { panel.hidden = true; return; }
+  const wasHidden = panel.hidden; panel.hidden = false;
+  if (wasHidden) panel.style.animation = 'none', void panel.offsetWidth, panel.style.animation = '';
+  const par = p.parents.map(get), sp = p.spouses.map(get), ch = kids.get(p.id) || [], sib = siblings(p), ed = state.edit;
+  const sec = (title, list, kind) => list.length ? `<h3>${title}</h3><div class="chips">${list.map((x) => chip(x, ed && kind ? `<i data-unlink="${kind}:${x.id}" title="فصل العلاقة">×</i>` : '')).join('')}</div>` : '';
+  const life = lifeText(p);
+  panel.innerHTML = `
+    <button class="x" data-act="close">✕</button>
+    <div class="hero">
+      <div class="av" style="--g:var(--${p.gender === 'f' ? 'f' : 'm'})">${photoSrc(p) ? `<img src="${esc(photoSrc(p))}">` : esc([...p.name][0])}</div>
+      <h2>${esc(p.name)}${p.death ? ' <small class="sub">(رحمه الله)</small>' : ''}</h2>
+      ${p.nick ? `<div class="sub">${esc(p.nick)}</div>` : ''}
+      <div class="sub">${esc(lineage(p))}</div>
+      ${life ? `<div class="sub">${esc(life)}</div>` : ''}
+    </div>
+    ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
+    ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
+    ${(p.details || []).length ? `<h3>تفاصيل</h3>${p.details.map((d) => `<div class="kv"><b>${esc(d.k)}:</b> ${esc(d.v)}</div>`).join('')}` : ''}
+    ${(p.gallery || []).length ? `<h3>الصور</h3><div class="gal">${p.gallery.map((g, i) => `<img src="${esc(src(g))}" data-gal="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
+    ${sec('الوالدين', par, 'parent')}${sec(p.gender === 'f' ? 'الزوج' : 'الزوجة / الزوج', sp, 'spouse')}${sec('الأبناء', ch, 'child')}${sec('الإخوة', sib)}
+    <div class="btnrow">
+      ${ch.length || sp.length ? '<button data-act="root">🌳 اعرض شجرته</button>' : ''}
+      ${p.parents.length ? '<button data-act="up">⇡ عيلته الأصلية</button>' : ''}
+      <button data-act="cmp">⚖ صلة القرابة</button>
+    </div>
+    ${ed ? `<h3>إضافة</h3><div class="btnrow">
+      <button data-add="child">+ ابن / بنت</button><button data-add="spouse">+ زوج / زوجة</button>
+      <button data-add="parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ أب / أم</button>
+      <button data-add="sibling" ${p.parents.length ? '' : 'disabled title="أضف الأب أو الأم الأول"'}>+ أخ / أخت</button></div>
+      <div class="btnrow"><button data-act="edit">✎ تعديل البيانات</button><button class="danger" data-act="del">حذف</button></div>` : ''}`;
+}
+panel.addEventListener('click', (e) => {
+  const t = e.target, id = state.selected;
+  const un = t.closest('[data-unlink]');
+  if (un) { const [k, oid] = un.dataset.unlink.split(':'); unlink(id, oid, k); return; }
+  const go = t.closest('[data-go]'); if (go) { locate(go.dataset.go); return; }
+  const gi = t.closest('[data-gal]'); if (gi) { lightbox(get(id), +gi.dataset.gal); return; }
+  const add = t.closest('[data-add]'); if (add) { openForm({ rel: add.dataset.add, anchor: id }); return; }
+  const act = t.closest('[data-act]')?.dataset.act;
+  if (act === 'close') select(null);
+  if (act === 'root') setRoot(id);
+  if (act === 'up') goUp(id);
+  if (act === 'cmp') { startCompare(id); return; }
+  if (act === 'edit') openForm({ person: id });
+  if (act === 'del') removePerson(id);
+});
+addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#dlg').open && state.selected && document.activeElement !== sIn) select(null); });
+
+function unlink(a, b, kind) {
+  const A = get(a), B = get(b);
+  if (kind === 'parent') A.parents = A.parents.filter((x) => x !== b);
+  if (kind === 'child') B.parents = B.parents.filter((x) => x !== a);
+  if (kind === 'spouse') { A.spouses = A.spouses.filter((x) => x !== b); B.spouses = B.spouses.filter((x) => x !== a); }
+  touch(); toast('اتفصلت العلاقة');
+}
+function removePerson(id) {
+  const p = get(id); if (!confirm(`تحذف "${p.name}" من الشجرة؟`)) return;
+  for (const q of data.people) { q.parents = q.parents.filter((x) => x !== id); q.spouses = q.spouses.filter((x) => x !== id); }
+  data.people = data.people.filter((q) => q.id !== id);
+  if (state.root === id) { const alt = parentPick(p) || p.spouses.map(get)[0] || (kids.get(id) || [])[0] || data.people[0]; state.root = alt ? alt.id : null; }
+  state.selected = null; touch();
+}
+
+// ───────────────────────── add / edit form ─────────────────────────
+const dlg = $('#dlg');
+const REL_TITLE = { child: 'إضافة ابن / بنت', spouse: 'إضافة زوج / زوجة', parent: 'إضافة أب / أم', sibling: 'إضافة أخ / أخت', root: 'إضافة أول شخص' };
+function resizeImage(file, size = 360, square = true) {
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const c = document.createElement('canvas'), ctx = c.getContext('2d');
+      if (square) {
+        const s = Math.min(img.width, img.height); c.width = c.height = size;
+        ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+      } else {
+        const k = Math.min(1, size / Math.max(img.width, img.height));
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        ctx.drawImage(img, 0, 0, c.width, c.height);
+      }
+      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg', square ? 0.82 : 0.78));
+    };
+    img.onerror = rej; img.src = url;
+  });
+}
+
+function openForm({ rel, anchor, person }) {
+  const editing = !!person, P = editing ? get(person) : null, A = anchor ? get(anchor) : null;
+  if (rel === 'parent' && A.parents.length >= 2) return toast('عنده والدين بالفعل');
+  let g = P?.gender || '';
+  if (!editing && rel === 'spouse') g = A.gender === 'm' ? 'f' : 'm';
+  if (!editing && rel === 'parent') g = A.parents.length ? (get(A.parents[0]).gender === 'm' ? 'f' : 'm') : 'm';
+  let photo = P ? photoSrc(P) : '', newPhoto = null, mode = 'new', chosen = null;
+  const title = editing ? `تعديل: ${P.name}` : `${REL_TITLE[rel]}${A ? ' — ' + A.name : ''}`;
+  const otherSel = rel === 'child' && A.spouses.length ? `<label>الطرف التاني (الأب/الأم)
+      <select name="other">${A.spouses.map(get).map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}<option value="">غير معروف / غير مسجّل</option></select></label>` : '';
+  const canExisting = !editing && rel && rel !== 'root';
+  dlg.innerHTML = `<form id="pf">
+    <h2>${esc(title)}</h2>
+    ${canExisting ? '<div class="tabs"><button type="button" data-mode="new" class="on">شخص جديد</button><button type="button" data-mode="exist">شخص موجود في الشجرة</button></div>' : ''}
+    <div id="newBox">
+      <div class="photoPick"><div class="av" id="pv" style="--g:var(--${g === 'f' ? 'f' : 'm'})">${photo ? `<img src="${esc(photo)}">` : '📷'}</div>
+        <label class="btn" style="margin:0"><button type="button" id="pickPh">اختر صورة</button><input type="file" id="ph" accept="image/*" hidden></label></div>
+      <label>الاسم<input name="name" required value="${esc(P?.name)}" autocomplete="off"></label>
+      <label>لقب / اسم الشهرة (اختياري)<input name="nick" value="${esc(P?.nick)}"></label>
+      <div class="seg">
+        <label><input type="radio" name="gender" value="m" required ${g === 'm' ? 'checked' : ''}><span>ذكر</span></label>
+        <label><input type="radio" name="gender" value="f" ${g === 'f' ? 'checked' : ''}><span>أنثى</span></label></div>
+      <div class="row2"><label>سنة الميلاد<input name="birth" inputmode="numeric" value="${esc(P?.birth)}" placeholder="مثال: 1985"></label>
+        <label>سنة الوفاة (لو متوفى)<input name="death" value="${esc(P?.death === '?' ? '' : P?.death)}" placeholder="؟ لو مش معروفة"></label></div>
+      <label>رقم التليفون<input name="phone" type="tel" value="${esc(P?.phone)}"></label>
+      <label>ملاحظات<textarea name="note">${esc(P?.note)}</textarea></label>
+      <label>تفاصيل إضافية (الوظيفة، العنوان، تاريخ الجواز…)</label>
+      <div id="dRows"></div><button type="button" id="dAdd">+ تفصيلة</button>
+      <datalist id="dKeys"><option>الوظيفة<option>العنوان<option>المحافظة<option>التعليم<option>تاريخ الجواز<option>الهواية<option>تاريخ الوفاة<option>مكان الدفن</datalist>
+      <label>ألبوم الصور</label>
+      <div id="gal" class="gal"></div><button type="button" id="gAdd">+ أضف صور</button><input type="file" id="gIn" accept="image/*" multiple hidden>
+      ${otherSel}
+    </div>
+    <div id="existBox" hidden>
+      <label>دوّر على الشخص<input id="exq" autocomplete="off" placeholder="اكتب الاسم…"></label><ul id="exl"></ul>
+      ${rel === 'child' ? otherSel.replace('<select', '<select id="otherEx"') : ''}
+    </div>
+    <div class="dlgActions">
+      <button type="button" data-close>إلغاء</button>
+      ${editing ? '' : '<button type="button" id="again">حفظ وإضافة غيره</button>'}
+      <button type="submit" class="primary">حفظ</button>
+    </div></form>`;
+  const f = $('#pf', dlg), q = (s) => $(s, dlg);
+  f.querySelectorAll('input[name=gender]').forEach((r) => r.addEventListener('change', () => { g = r.value; q('#pv').style.setProperty('--g', `var(--${g === 'f' ? 'f' : 'm'})`); }));
+  q('#pickPh').onclick = () => q('#ph').click();
+  q('#ph').onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    try { newPhoto = await resizeImage(file); q('#pv').innerHTML = `<img src="${newPhoto}">`; } catch { toast('الصورة دي مش مدعومة'); }
+  };
+  // extra details + gallery
+  const det = (P?.details || []).map((d) => ({ ...d }));
+  const gal = (P?.gallery || []).map((path) => ({ path, src: src(path) }));
+  const drawDet = () => {
+    q('#dRows').innerHTML = det.map((d, i) => `<div class="row2" style="margin-top:6px"><input list="dKeys" data-dk="${i}" value="${esc(d.k)}" placeholder="العنوان"><input data-dv="${i}" value="${esc(d.v)}" placeholder="القيمة"><button type="button" data-dx="${i}" style="flex:none">×</button></div>`).join('');
+  };
+  const drawGal = () => {
+    q('#gal').innerHTML = gal.map((g, i) => `<div class="gi"><img src="${esc(g.src)}" alt=""><button type="button" data-gx="${i}">×</button></div>`).join('');
+  };
+  drawDet(); drawGal();
+  q('#dAdd').onclick = () => { det.push({ k: '', v: '' }); drawDet(); q(`[data-dk="${det.length - 1}"]`).focus(); };
+  q('#dRows').oninput = (e) => { const t = e.target; if (t.dataset.dk) det[t.dataset.dk].k = t.value; if (t.dataset.dv) det[t.dataset.dv].v = t.value; };
+  q('#dRows').onclick = (e) => { const x = e.target.closest('[data-dx]'); if (x) { det.splice(+x.dataset.dx, 1); drawDet(); } };
+  q('#gAdd').onclick = () => q('#gIn').click();
+  q('#gIn').onchange = async (e) => {
+    for (const file of e.target.files) { try { gal.push({ path: null, src: await resizeImage(file, 1000, false) }); } catch { toast('صورة مش مدعومة'); } }
+    e.target.value = ''; drawGal();
+  };
+  q('#gal').onclick = (e) => { const x = e.target.closest('[data-gx]'); if (x) { gal.splice(+x.dataset.gx, 1); drawGal(); } };
+  dlg.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => dlg.close()));
+  dlg.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => {
+    mode = b.dataset.mode; dlg.querySelectorAll('[data-mode]').forEach((x) => x.classList.toggle('on', x === b));
+    q('#newBox').hidden = mode !== 'new'; q('#existBox').hidden = mode !== 'exist';
+    f.querySelector('[name=name]').required = mode === 'new'; f.querySelector('[name=gender]').required = mode === 'new';
+    if (mode === 'exist') q('#exq').focus();
+  }));
+  if (canExisting) {
+    const list = q('#exl'), draw = () => {
+      const s = norm(q('#exq').value);
+      const res = data.people.filter((x) => x.id !== anchor && (!s || norm(x.name).includes(s))).slice(0, 30);
+      list.innerHTML = res.map((x) => `<li data-id="${x.id}" class="${x.id === chosen ? 'on' : ''}">${esc(x.name)} <small class="hint">${esc(lineage(x) || lifeText(x))}</small></li>`).join('');
+    };
+    q('#exq').oninput = draw; draw();
+    list.onclick = (e) => { const li = e.target.closest('li'); if (li) { chosen = li.dataset.id; draw(); } };
+  }
+
+  const submit = (again) => {
+    if (mode === 'exist') {
+      if (!chosen) return toast('اختار شخص من القايمة');
+      const other = (q('#otherEx') || {}).value;
+      linkRel(rel, A, get(chosen), other);
+      finish(chosen, again); return;
+    }
+    if (!f.reportValidity()) return;
+    const fd = new FormData(f);
+    const v = (k) => (fd.get(k) || '').toString().trim();
+    const obj = editing ? P : { id: uid(), parents: [], spouses: [] };
+    Object.assign(obj, { name: v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note') });
+    if (editing && !v('death') && P.death === '?') obj.death = '?';
+    obj.details = det.map((d) => ({ k: d.k.trim(), v: d.v.trim() })).filter((d) => d.k && d.v);
+    obj.gallery = gal.map((g, i) => {
+      if (g.path) return g.path;
+      const path = `photos/${obj.id}-g${Date.now().toString(36)}${i}.jpg`;
+      state.photos[path] = g.src; state.newPhotos.add(path); return path;
+    });
+    if (newPhoto) {
+      const path = `photos/${obj.id}-${Date.now().toString(36)}.jpg`;
+      obj.photo = path; state.photos[path] = newPhoto; state.newPhotos.add(path);
+    }
+    if (!editing) {
+      data.people.push(obj);
+      if (rel === 'sibling') obj.parents = A.parents.slice();
+      else if (rel) linkRel(rel, A, obj, fd.get('other'));
+      if (rel === 'root' || !state.root) state.root = obj.id;
+    }
+    finish(obj.id, again);
+  };
+  const finish = (id, again) => {
+    if (A) state.coll.set(A.id, false);
+    dlg.close(); touch(); locate(id);
+    if (again && rel) setTimeout(() => openForm({ rel, anchor }), 350);
+  };
+  f.onsubmit = (e) => { e.preventDefault(); submit(false); };
+  const ag = q('#again'); if (ag) ag.onclick = () => submit(true);
+  dlg.showModal();
+  if (!editing) setTimeout(() => f.querySelector('[name=name]')?.focus(), 50);
+}
+function linkRel(rel, A, X, other) {
+  if (rel === 'child') { X.parents = [A.id, other].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 2); }
+  if (rel === 'spouse') { if (!A.spouses.includes(X.id)) A.spouses.push(X.id); if (!X.spouses.includes(A.id)) X.spouses.push(A.id); }
+  if (rel === 'parent') { if (!A.parents.includes(X.id) && A.parents.length < 2) A.parents.push(X.id); }
+  if (rel === 'sibling') { X.parents = A.parents.slice(); }
+}
+function lightbox(p, i) {
+  const n = p.gallery.length;
+  const show = () => {
+    dlg.innerHTML = `<div class="lb"><img src="${esc(src(p.gallery[i]))}" alt=""><div class="dlgActions" style="justify-content:space-between;align-items:center">
+      <button data-n="-1" ${n < 2 ? 'disabled' : ''}>السابقة</button><span class="hint">${i + 1} / ${n} — ${esc(p.name)}</span><button data-n="1" ${n < 2 ? 'disabled' : ''}>التالية</button><button data-close>إغلاق</button></div></div>`;
+    dlg.querySelector('[data-close]').onclick = () => dlg.close();
+    dlg.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { i = (i + +b.dataset.n + n) % n; show(); }));
+  };
+  show(); if (!dlg.open) dlg.showModal();
+}
+
+// ───────────────────────── صلة القرابة ─────────────────────────
+const G = (b, m, f) => (b.gender === 'f' ? f : m);
+const H = (x) => (x.gender === 'f' ? 'هي' : 'هو');
+const ORD = ['', 'الأولى', 'التانية', 'التالتة', 'الرابعة', 'الخامسة', 'السادسة'];
+function ancMap(p) {                       // id → path [p … ancestor] (shortest)
+  const m = new Map([[p.id, [p]]]); let fr = [p];
+  while (fr.length) {
+    const next = [];
+    for (const x of fr) for (const pid of x.parents) if (!m.has(pid)) { const y = get(pid); m.set(pid, [...m.get(x.id), y]); next.push(y); }
+    fr = next;
+  }
+  return m;
+}
+// "b هو <noun> a" عن طريق الدم
+function bloodRel(a, b) {
+  if (a.id === b.id) return null;
+  const A = ancMap(a), B = ancMap(b); let best = null, all = [];
+  for (const [id, pa] of A) {
+    const pb = B.get(id); if (!pb) continue;
+    const s = pa.length + pb.length;
+    if (!best || s < best.s) { best = { s, pa, pb }; all = [get(id)]; } else if (s === best.s) all.push(get(id));
+  }
+  if (!best) return null;
+  const { pa, pb } = best, da = pa.length - 1, db = pb.length - 1;
+  let n;
+  if (da === 0) n = db === 1 ? G(b, 'ابن', 'بنت') : db === 2 ? G(b, 'حفيد', 'حفيدة') : db === 3 ? `${G(b, 'ابن', 'بنت')} حفيد` : `${G(b, 'حفيد', 'حفيدة')} (الجيل ${db})`;
+  else if (db === 0) n = da === 1 ? G(b, 'أب', 'أم') : da === 2 ? G(b, 'جد', 'جدة') : da === 3 ? G(b, 'أبو الجد', 'أم الجدة') : `${G(b, 'جد', 'جدة')} أعلى (${da} أجيال فوق)`;
+  else if (da === 1 && db === 1) {
+    n = all.length > 1 ? G(b, 'أخ شقيق', 'أخت شقيقة') : `${G(b, 'أخ', 'أخت')} ${all[0].gender === 'f' ? 'لأم' : 'لأب'}`;
+  } else if (da === 1) {
+    const sib = pb[db - 1].gender === 'f' ? 'أخت' : 'أخ';
+    n = db === 2 ? `${G(b, 'ابن', 'بنت')} ${sib}` : db === 3 ? `${G(b, 'حفيد', 'حفيدة')} ${sib}` : `${G(b, 'حفيد', 'حفيدة')} ${sib} (الجيل ${db - 1} بعده)`;
+  } else if (db === 1) {
+    const mid = pa[da - 1];
+    n = da === 2 ? G(b, mid.gender === 'm' ? 'عم' : 'خال', mid.gender === 'm' ? 'عمة' : 'خالة')
+      : da === 3 ? `${G(b, 'أخو', 'أخت')} ${mid.gender === 'm' ? 'الجد' : 'الجدة'}`
+        : `${G(b, 'أخو', 'أخت')} ${mid.gender === 'm' ? 'جد' : 'جدة'} أعلى (${da - 1} أجيال فوق)`;
+  } else if (da === 2 && db === 2) {
+    const ap = pa[1], bp = pb[1];
+    const w = ap.gender === 'm' ? (bp.gender === 'm' ? 'عم' : 'عمة') : (bp.gender === 'm' ? 'خال' : 'خالة');
+    n = `${G(b, 'ابن', 'بنت')} ${w}`;
+  } else if (db > da && bloodRel(a, pb[1])) {          // b من نسل قريب لـ a
+    n = `${G(b, 'ابن', 'بنت')} ${bloodRel(a, pb[1]).noun}`;
+  } else if (da > db && bloodRel(pa[1], b)) {          // b قريب لأب/أم a
+    n = `${bloodRel(pa[1], b).noun} ${pa[1].gender === 'm' ? 'الأب' : 'الأم'}`;
+  } else {
+    const k = Math.min(da, db) - 1;
+    n = `${G(b, 'قريب', 'قريبة')} من الدرجة ${ORD[k] || k}${da !== db ? ` بفارق ${Math.abs(da - db)} جيل` : ''}`;
+  }
+  return { noun: n, common: da > 0 && db > 0 ? all : [] };
+}
+function describe(a, b) {                  // كل الصلات اللي تخلي b قريب لـ a
+  const out = [], seen = new Set(), add = (s) => { if (!seen.has(s)) { seen.add(s); out.push(s); } };
+  const br = bloodRel(a, b);
+  if (br) add(`${b.name} ${H(b)} ${br.noun} ${a.name}`);
+  if (a.spouses.includes(b.id)) add(`${b.name} ${H(b)} ${G(b, 'زوج', 'زوجة')} ${a.name}`);
+  if (out.length) return { lines: out, common: br ? br.common : [] };   // صلة مباشرة؟ ماتزودش صلات المصاهرة
+  for (const s of a.spouses.map(get)) {   // قريب لزوج/زوجة a
+    const r = s.id !== b.id && bloodRel(s, b);
+    if (r) add(`${b.name} ${H(b)} ${r.noun} ${s.name}، و${s.name} ${H(s)} ${G(s, 'زوج', 'زوجة')} ${a.name}`);
+  }
+  for (const sb of b.spouses.map(get)) {  // b متجوز من قريب لـ a
+    const r = sb.id !== a.id && bloodRel(a, sb);
+    if (r) add(`${b.name} ${H(b)} ${G(b, 'زوج', 'زوجة')} ${sb.name}، و${sb.name} ${H(sb)} ${r.noun} ${a.name}`);
+  }
+  return { lines: out, common: br ? br.common : [] };
+}
+function pairHTML(a, b) {
+  const x = describe(a, b), y = describe(b, a);
+  const lines = [...x.lines, ...y.lines];
+  const common = x.common.length ? `<div class="hint">الجد المشترك: ${x.common.map((c) => esc(c.name)).join(' و')}</div>` : '';
+  return `<div class="pair"><div class="pn">${esc(a.name)} ↔ ${esc(b.name)}</div>${lines.length ? lines.map((l) => `<div>${esc(l)}</div>`).join('') : '<div class="hint">مفيش صلة مسجّلة بينهم لسه — ممكن تكون محتاجة تضيف أب/أم أو جواز ناقص.</div>'}${common}</div>`;
+}
+function startCompare(id) { state.cmp = true; state.picks = id ? [id] : []; render(); }
+function togglePick(id) {
+  const i = state.picks.indexOf(id);
+  if (i >= 0) state.picks.splice(i, 1); else if (state.picks.length < 8) state.picks.push(id); else toast('الحد الأقصى 8 أشخاص');
+  render();
+}
+function renderCmp() {
+  const box = $('#cmp'); box.hidden = !state.cmp; $('#btnCmp').classList.toggle('on', state.cmp);
+  if (!state.cmp) return;
+  const ps = state.picks.map(get).filter(Boolean);
+  let html = `<div class="cmpHead"><b>⚖ صلة القرابة</b><button data-x>إنهاء</button></div>`;
+  html += ps.length ? `<div class="chips">${ps.map((p, i) => chip(p, `<i data-unpick="${p.id}">×</i>`).replace('class="chip"', `class="chip" title="${i + 1}"`)).join('')}</div>` : '';
+  if (ps.length < 2) html += `<p class="hint">اضغط على شخصين أو أكتر في الشجرة عشان تشوف صلة القرابة بينهم.</p>`;
+  else for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) html += pairHTML(ps[i], ps[j]);
+  box.innerHTML = html;
+}
+$('#cmp').addEventListener('click', (e) => {
+  if (e.target.closest('[data-x]')) { state.cmp = false; state.picks = []; render(); return; }
+  const u = e.target.closest('[data-unpick]'); if (u) { e.stopPropagation(); togglePick(u.dataset.unpick); }
+});
+$('#btnCmp').onclick = () => { if (state.cmp) { state.cmp = false; state.picks = []; render(); } else startCompare(state.selected); };
+
+$('#btnFirst').onclick = () => { state.edit = true; openForm({ rel: 'root' }); };
+
+// ───────────────────────── settings ─────────────────────────
+$('#btnEdit').onclick = () => { state.edit = !state.edit; render(); toast(state.edit ? 'وضع التعديل شغّال' : 'وضع العرض'); };
+$('#btnSave').onclick = saveToGitHub;
+$('#btnSettings').onclick = openSettings;
+function openSettings() {
+  dlg.innerHTML = `<form id="sf"><h2>الإعدادات</h2>
+    <label>اسم العيلة (العنوان)<input name="title" value="${esc(data.meta.title)}"></label>
+    <div class="row2"><label>صاحب الريبو (GitHub user)<input name="owner" value="${esc(cfg.owner)}" placeholder="username"></label>
+      <label>اسم الريبو<input name="repo" value="${esc(cfg.repo)}" placeholder="family-tree"></label></div>
+    <label>Branch<input name="branch" value="${esc(cfg.branch)}"></label>
+    <label>GitHub Token (للتعديل فقط)<input name="token" type="password" value="${esc(cfg.token)}" placeholder="github_pat_…" autocomplete="off"></label>
+    <p class="hint">الـ Token بيتخزن في متصفحك بس. اعمل Fine-grained token لريبو الشجرة بس بصلاحية <b>Contents: Read and write</b>. اللي يشوف الموقع بس مش محتاج Token.</p>
+    <div class="dlgActions">
+      <button type="button" id="dl">تنزيل JSON</button>
+      ${state.dirty ? '<button type="button" id="drop" class="danger">تجاهل التعديلات المحلية</button>' : ''}
+      <button type="button" data-close>إلغاء</button><button type="submit" class="primary">حفظ</button></div></form>`;
+  const f = $('#sf', dlg);
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  $('#dl', dlg).onclick = () => {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([serialize(data)], { type: 'application/json' })); a.download = 'family.json'; a.click();
+  };
+  const drop = $('#drop', dlg);
+  if (drop) drop.onclick = () => { if (confirm('هتتمسح كل التعديلات اللي لسه ماتحفظتش. متأكد؟')) { store.del('ft-draft'); location.reload(); } };
+  f.onsubmit = (e) => {
+    e.preventDefault(); const fd = new FormData(f), v = (k) => fd.get(k).toString().trim();
+    cfg = { owner: v('owner'), repo: v('repo'), branch: v('branch') || 'main', token: v('token') };
+    store.set('ft-cfg', cfg);
+    if (v('title') !== data.meta.title) { data.meta.title = v('title') || 'شجرة العيلة'; $('#title').textContent = data.meta.title; document.title = data.meta.title; touch(); }
+    dlg.close(); toast('اتحفظت الإعدادات');
+  };
+  dlg.showModal();
+}
+dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+addEventListener('beforeunload', (e) => { if (state.dirty) { e.preventDefault(); e.returnValue = ''; } });
+addEventListener('resize', () => cur && fit());
+
+load();

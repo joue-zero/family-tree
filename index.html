@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>شجرة العيلة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="bar">
+  <h1 id="title">شجرة العيلة</h1>
+  <div id="searchwrap">
+    <input id="search" type="search" placeholder="ابحث عن اسم…" autocomplete="off">
+    <ul id="results" hidden></ul>
+  </div>
+  <div class="actions">
+    <button id="btnUp" title="الجيل الأعلى">⇡ فوق</button>
+    <button id="btnCmp" title="صلة القرابة بين أشخاص">⚖ صلة القرابة</button>
+    <button id="btnEdit" title="وضع التعديل">✎ تعديل</button>
+    <button id="btnSave" class="primary" hidden>حفظ <b id="dirtyMark">●</b></button>
+    <button id="btnSettings" title="الإعدادات">⚙</button>
+  </div>
+</header>
+
+<main id="view">
+  <div id="stage"><svg id="lines"></svg><div id="cards"></div></div>
+  <div id="zoom">
+    <button id="zIn" title="تكبير">+</button>
+    <button id="zOut" title="تصغير">−</button>
+    <button id="zFit" title="ملاءمة الشاشة">⤢</button>
+  </div>
+  <div id="empty" hidden>
+    <p>مفيش أي أشخاص لسه.</p>
+    <button id="btnFirst" class="primary">+ ابدأ بأول شخص</button>
+  </div>
+</main>
+
+<aside id="panel" hidden></aside>
+<section id="cmp" hidden></section>
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
