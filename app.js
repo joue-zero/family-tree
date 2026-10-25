@@ -19,7 +19,7 @@ function toast(msg) {
 }
 
 // ───────────────────────── state ─────────────────────────
-const CARD_W = 148, CARD_H = 184, GAP_X = 20, GAP_Y = 76, SP_GAP = 16, PAD = 50;
+const CARD_W = 148, CARD_H = 206, GAP_X = 20, GAP_Y = 76, SP_GAP = 16, PAD = 50;
 let data = { meta: { title: 'شجرة العيلة' }, people: [] };
 let byId = new Map();
 let kids = new Map();
@@ -34,6 +34,8 @@ function detectRepo() {
 }
 
 // ───────────────────────── data model ─────────────────────────
+document.documentElement.style.setProperty('--card-w', CARD_W + 'px');
+document.documentElement.style.setProperty('--card-h', CARD_H + 'px');
 const ancCache = new Map();
 function index() {
   ancCache.clear();
