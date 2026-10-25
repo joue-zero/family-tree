@@ -1,14 +1,14 @@
 {
   "meta": {"title":"عائلة السيد","root":"p1"},
   "people": [
-    {"id":"p1","name":"عبد الرحمن السيد","gender":"m","birth":"1925","death":"2001","spouses":["p2"]},
-    {"id":"p2","name":"فاطمة حسن","gender":"f","birth":"1930","death":"2010"},
+    {"id":"p1","name":"عبد الرحمن السيد","gender":"m","birth":"1925","death":"2001","details":[{"k":"تجربة","v":"اختبار الحفظ على GitHub"}],"spouses":["p2"]},
+    {"id":"p2","name":"فاطمة حسن","gender":"f","birth":"1930","death":"2010","spouses":["p1"]},
     {"id":"p3","name":"محمود عبد الرحمن","gender":"m","birth":"1952","parents":["p1","p2"],"spouses":["p6"]},
     {"id":"p4","name":"سعاد عبد الرحمن","gender":"f","birth":"1955","parents":["p1","p2"],"spouses":["p7"]},
     {"id":"p5","name":"ياسر عبد الرحمن","gender":"m","birth":"1960","parents":["p1","p2"],"spouses":["p8"]},
-    {"id":"p6","name":"هدى إبراهيم","gender":"f","birth":"1956","parents":["p20","p21"]},
-    {"id":"p7","name":"كمال فؤاد","gender":"m","birth":"1950"},
-    {"id":"p8","name":"منى علي","gender":"f","birth":"1964"},
+    {"id":"p6","name":"هدى إبراهيم","gender":"f","birth":"1956","parents":["p20","p21"],"spouses":["p3"]},
+    {"id":"p7","name":"كمال فؤاد","gender":"m","birth":"1950","spouses":["p4"]},
+    {"id":"p8","name":"منى علي","gender":"f","birth":"1964","spouses":["p5"]},
     {"id":"p9","name":"أحمد محمود","gender":"m","birth":"1980","parents":["p3","p6"],"spouses":["p11"]},
     {"id":"p10","name":"مريم محمود","gender":"f","birth":"1984","parents":["p3","p6"],"spouses":["p17"]},
     {"id":"p11","name":"نورا كمال","gender":"f","birth":"1982","parents":["p4","p7"],"spouses":["p9"]},
@@ -17,11 +17,11 @@
     {"id":"p14","name":"ليلى ياسر","gender":"f","birth":"1993","parents":["p5","p8"]},
     {"id":"p15","name":"آدم أحمد","gender":"m","birth":"2010","parents":["p9","p11"]},
     {"id":"p16","name":"جنى أحمد","gender":"f","birth":"2013","parents":["p9","p11"]},
-    {"id":"p17","name":"طارق سمير","gender":"m","birth":"1981"},
+    {"id":"p17","name":"طارق سمير","gender":"m","birth":"1981","spouses":["p10"]},
     {"id":"p18","name":"ريم طارق","gender":"f","birth":"2012","parents":["p10","p17"]},
-    {"id":"p19","name":"دينا سامح","gender":"f","birth":"1988","parents":["p22"]},
+    {"id":"p19","name":"دينا سامح","gender":"f","birth":"1988","parents":["p22"],"spouses":["p12"]},
     {"id":"p20","name":"إبراهيم المصري","gender":"m","birth":"1928","death":"2005","spouses":["p21"]},
-    {"id":"p21","name":"نبيلة صالح","gender":"f","birth":"1932"},
+    {"id":"p21","name":"نبيلة صالح","gender":"f","birth":"1932","spouses":["p20"]},
     {"id":"p22","name":"سامح إبراهيم","gender":"m","birth":"1960","parents":["p20","p21"]}
   ]
 }
