@@ -1084,11 +1084,14 @@ function openPhotoInfo(path, back) {
 // ───────────────────────── دمج شخصين ─────────────────────────
 const MERGE_FIELDS = [['name', 'الاسم'], ['nick', 'اللقب'], ['gender', 'النوع'], ['birth', 'الميلاد'], ['death', 'الوفاة'], ['phone', 'التليفون']];
 const showVal = (f, v) => (f === 'gender' ? (v === 'f' ? 'أنثى' : v === 'm' ? 'ذكر' : '') : v || '—');
+const tokMemo = new Map();
+const nameTok = (n) => { let t = tokMemo.get(n); if (!t) { t = nameTokens(norm(n)); tokMemo.set(n, t); } return t; };
 function dupScore(a, b) {            // how likely a and b are the same person (0 = no)
-  const ta = nameTokens(norm(a.name)), tb = nameTokens(norm(b.name));
+  const ta = nameTok(a.name), tb = nameTok(b.name);
   if (!ta.length || !tb.length || ta[0] !== tb[0]) return 0;
   if (a.gender && b.gender && a.gender !== b.gender) return 0;
-  const sb = new Set(tb), n = ta.filter((t) => sb.has(t)).length;
+  if (ta.length < 2 && tb.length < 2 ? false : !tb.includes(ta[1]) && !ta.includes(tb[1])) return 0;     // cheap reject: second names share nothing
+  const n = ta.filter((t) => tb.includes(t)).length;
   if (n < Math.min(2, ta.length, tb.length)) return 0;
   let s = n / Math.max(ta.length, tb.length);
   if (a.birth && b.birth && yearOf(a) === yearOf(b)) s += 0.3;
@@ -1102,7 +1105,7 @@ function canMerge(a, b) {            // '' when OK, otherwise the reason
 }
 function dupPairs() {
   const buckets = new Map();
-  for (const p of data.people) { const t = nameTokens(norm(p.name))[0]; if (t) { if (!buckets.has(t)) buckets.set(t, []); buckets.get(t).push(p); } }
+  for (const p of data.people) { const t = nameTok(p.name)[0]; if (t) { if (!buckets.has(t)) buckets.set(t, []); buckets.get(t).push(p); } }
   const out = [];
   for (const arr of buckets.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++) {
     const s = dupScore(arr[i], arr[j]);
@@ -1394,9 +1397,10 @@ function openExport() {
   dlg.innerHTML = `<form><h2>🖨 تصدير الشجرة</h2>
     <p class="hint">بيتصدّر الفرع المعروض حاليًا (من ${esc(get(state.root).name)}). غيّر الجذر بـ «اعرض شجرته» لو عايز فرع تاني.</p>
     <label class="chk"><input type="checkbox" id="exOpen" checked> افتح كل الفروع المطوية في التصدير</label>
-    <div class="dlgActions"><button type="button" id="exPng">🖼 تنزيل صورة PNG</button><button type="button" id="exPrint" class="primary">🖨 طباعة / PDF</button><button type="button" data-close>إغلاق</button></div>
+    <div class="dlgActions"><button type="button" id="exPng">🖼 تنزيل صورة PNG</button><button type="button" id="exBook">📖 كتاب العيلة</button><button type="button" id="exPrint" class="primary">🖨 طباعة / PDF</button><button type="button" data-close>إغلاق</button></div>
     <p class="hint" id="exStat"></p></form>`;
   $('[data-close]', dlg).onclick = () => dlg.close();
+  $('#exBook', dlg).onclick = openBook;
   const run = async (fn) => {
     const st = $('#exStat', dlg); st.textContent = 'جاري التجهيز…';
     try { await document.fonts?.ready; await fn(await renderTreeCanvas($('#exOpen', dlg).checked)); st.textContent = ''; }
@@ -1415,6 +1419,80 @@ function openExport() {
   dlg.showModal();
 }
 $('#zPrint').onclick = openExport;
+
+// ───────────────────────── كتاب العيلة (طباعة / PDF) ─────────────────────────
+function bookOrder(scope) {                         // descendants first (eldest first), spouses right after their partner
+  const seen = new Set(), out = [];
+  const visit = (p) => {
+    if (seen.has(p.id)) return;
+    seen.add(p.id); out.push(p);
+    for (const s of p.spouses.map(get)) if (!seen.has(s.id)) { seen.add(s.id); out.push(s); }
+    for (const c of kids.get(p.id) || []) visit(c);
+  };
+  if (scope === 'branch') visit(get(state.root));
+  else for (const p of [...data.people].sort((a, b) => yearOf(a) - yearOf(b))) if (!seen.has(p.id)) visit(topAncestor(p));
+  return out;
+}
+async function buildBook(o) {
+  const list = bookOrder(o.scope), title = data.meta.title || 'شجرة العيلة';
+  const paths = new Set();
+  for (const p of list) { if (p.photo) paths.add(p.photo); if (o.gallery) (p.gallery || []).slice(0, o.maxGal).forEach((g) => paths.add(g)); }
+  await Promise.all([...paths].map((path) => (vault.on && !state.photos[path] ? ensureBlob(path) : null)));
+  const url = (path) => { const s = src(path); return s ? new URL(s, location.href).href : ''; };
+  const names = (arr) => arr.map((x) => esc(x.name)).join('، ');
+  const info = data.meta.photoInfo || {};
+  const person = (p) => {
+    const par = p.parents.map(get), sp = p.spouses.map(get), ch = kids.get(p.id) || [], sib = siblings(p);
+    const life = lifeText(p, true), age = ageText(p), ph = p.photo ? url(p.photo) : '';
+    const rel = [par.length && `<div><b>الوالدين:</b> ${names(par)}</div>`, sp.length && `<div><b>${p.gender === 'f' ? 'الزوج' : 'الزوجة / الزوج'}:</b> ${names(sp)}</div>`,
+      ch.length && `<div><b>الأبناء:</b> ${names(ch)}</div>`, sib.length && `<div><b>الإخوة:</b> ${names(sib)}</div>`].filter(Boolean).join('');
+    const det = (p.details || []).map((d) => `<tr><th>${esc(d.k)}</th><td>${esc(d.v)}</td></tr>`).join('') + (p.phone && o.phone ? `<tr><th>التليفون</th><td>${esc(p.phone)}</td></tr>` : '');
+    const gal = o.gallery ? (p.gallery || []).slice(0, o.maxGal).map((g) => {
+      const u = url(g); if (!u) return '';
+      const cap = info[g] || {}, with_ = photoPeople(g).filter((x) => x.id !== p.id);
+      return `<figure><img src="${esc(u)}" alt=""><figcaption>${esc([cap.title, cap.date].filter(Boolean).join(' — '))}${with_.length ? `<div>مع: ${names(with_.slice(0, 6))}${with_.length > 6 ? '…' : ''}</div>` : ''}</figcaption></figure>`;
+    }).join('') : '';
+    const media = (p.media || []).map((m) => `<li>${m.t === 'audio' ? '🎙' : '🎬'} ${esc(m.title || (m.t === 'audio' ? 'تسجيل صوتي' : 'فيديو'))}${m.t === 'link' ? ` — ${esc(m.src)}` : ''}</li>`).join('');
+    return `<section class="pp"><div class="ph">${ph ? `<img class="av ${p.gender === 'f' ? 'f' : 'm'}" src="${esc(ph)}" alt="">` : `<div class="av ${p.gender === 'f' ? 'f' : 'm'}">${esc([...p.name][0] || '؟')}</div>`}
+      <div><h2>${esc(p.name)}${p.death ? ' <small>(رحمه الله)</small>' : ''}</h2>${p.nick ? `<div class="sub">${esc(p.nick)}</div>` : ''}<div class="sub">${esc(lineage(p))}</div>
+      <div class="life">${esc(life)}${age ? ` · ${esc(age)}` : ''}</div>${p.unsure ? `<div class="warn">⚠ معلومات غير مؤكدة${p.source ? ` — المصدر: ${esc(p.source)}` : ''}</div>` : ''}</div></div>
+      <div class="rel">${rel}</div>${det ? `<table>${det}</table>` : ''}${p.note ? `<p class="note">${esc(p.note).replace(/\n/g, '<br>')}</p>` : ''}
+      ${media ? `<div class="med"><b>تسجيلات وفيديو:</b><ul>${media}</ul></div>` : ''}${gal ? `<div class="gal">${gal}</div>` : ''}</section>`;
+  };
+  const css = `@page{size:A4 portrait;margin:14mm}*{box-sizing:border-box}html,body{margin:0}body{font-family:Cairo,"Segoe UI",Tahoma,sans-serif;color:#2b2723;font-size:12.5pt;line-height:1.7}
+    .cover{height:260mm;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;page-break-after:always}.cover h1{font-size:34pt;margin:0 0 8mm}.cover p{color:#8b8176;margin:2mm}
+    .toc{page-break-after:always}.toc h2{margin-top:0}.toc ol{columns:2;column-gap:12mm;padding-inline-start:6mm;margin:0}.toc li{break-inside:avoid;margin-bottom:1mm}.toc small{color:#8b8176}
+    .pp{page-break-after:always;break-inside:avoid-page}.ph{display:flex;gap:6mm;align-items:center;border-bottom:2px solid #bfb29c;padding-bottom:4mm}.ph h2{margin:0;font-size:20pt}.ph small{font-size:11pt;color:#8b8176}
+    .av{width:38mm;height:38mm;border-radius:50%;object-fit:cover;flex:none;border:2mm solid #3d8b86;display:grid;place-items:center;font-size:34pt;font-weight:700;color:#3d8b86;background:#e5f0ee}.av.f{border-color:#c75d78;color:#c75d78;background:#f7e3e8}
+    .sub,.life{color:#6f665c}.warn{color:#a56a00;font-weight:600}.rel div{margin:1.5mm 0}table{border-collapse:collapse;margin:4mm 0;width:100%}th{text-align:start;width:32%;color:#6f665c;font-weight:600;padding:1mm 3mm 1mm 0}td{padding:1mm 0}
+    .note{background:#f5efe4;padding:3mm 4mm;border-radius:3mm}.med ul{margin:1mm 0;padding-inline-start:6mm}.gal{display:grid;grid-template-columns:repeat(3,1fr);gap:3mm;margin-top:4mm}
+    figure{margin:0;break-inside:avoid}figure img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:2mm}figcaption{font-size:9.5pt;color:#6f665c}`;
+  return `<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><title>${esc(title)}</title><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap"><style>${css}</style>
+    <section class="cover"><h1>${esc(title)}</h1><p>${list.length} شخص${o.scope === 'branch' ? ` — فرع ${esc(get(state.root).name)}` : ''}</p><p>${new Date().toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric' })}</p></section>
+    <section class="toc"><h2>فهرس الأشخاص</h2><ol>${list.map((p) => `<li>${esc(p.name)} <small>${esc(lifeText(p))}</small></li>`).join('')}</ol></section>
+    ${list.map(person).join('')}</html>`;
+}
+function openBook() {
+  dlg.innerHTML = `<form><h2>📖 كتاب العيلة</h2>
+    <p class="hint">صفحة لكل شخص: صورته، نسبه، سنواته، علاقاته، تفاصيله وملاحظاته وصوره. بتطلع في نافذة الطباعة، اختار «Save as PDF».</p>
+    <label>مين يدخل الكتاب${`<select id="bs"><option value="branch">الفرع المعروض (من ${esc(get(state.root).name)})</option><option value="all">كل العيلة</option></select>`}</label>
+    <label class="chk"><input type="checkbox" id="bg" checked> الصور الإضافية (الألبوم) <select id="bm" style="width:auto;display:inline-block"><option>3</option><option selected>6</option><option>9</option></select> صور لكل شخص</label>
+    <label class="chk"><input type="checkbox" id="bp"> أرقام التليفونات</label>
+    <p class="hint" id="bt"></p>
+    <div class="dlgActions"><button type="button" data-close>إلغاء</button><button type="submit" class="primary" id="bgo">🖨 جهّز الكتاب</button></div></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  $('form', dlg).onsubmit = async (e) => {
+    e.preventDefault(); $('#bgo', dlg).disabled = true; $('#bt', dlg).textContent = 'جاري التجهيز… (فك تشفير الصور لو لزم)';
+    try {
+      await document.fonts?.ready;
+      const html = await buildBook({ scope: $('#bs', dlg).value, gallery: $('#bg', dlg).checked, maxGal: +$('#bm', dlg).value, phone: $('#bp', dlg).checked });
+      const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0'; f.srcdoc = html;
+      f.onload = () => setTimeout(() => { f.contentWindow.focus(); f.contentWindow.print(); setTimeout(() => f.remove(), 120000); }, 1200);
+      document.body.appendChild(f); dlg.close();
+    } catch (err) { $('#bt', dlg).textContent = 'فشل: ' + err.message; $('#bgo', dlg).disabled = false; }
+  };
+  if (!dlg.open) dlg.showModal();
+}
 
 // ───────────────────────── أعياد الميلاد والذكرى ─────────────────────────
 function parseDate(s) {
