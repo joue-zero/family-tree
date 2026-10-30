@@ -683,7 +683,7 @@ function renderPanel() {
       <button data-add="child">+ ابن / بنت</button><button data-add="spouse">+ زوج / زوجة</button>
       <button data-add="parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ أب / أم</button>
       <button data-add="sibling" ${p.parents.length ? '' : 'disabled title="أضف الأب أو الأم الأول"'}>+ أخ / أخت</button></div>
-      <div class="btnrow"><button data-act="media">🎙 صوت / 🎬 فيديو</button></div>
+      <div class="btnrow"><button data-act="media">🎙 صوت / 🎬 فيديو</button><button data-act="merge">🔀 دمج مع شخص</button></div>
       <div class="btnrow"><button data-act="edit">✎ تعديل البيانات</button><button class="danger" data-act="del">حذف</button></div>` : ''}`;
 }
 panel.addEventListener('click', (e) => {
@@ -703,6 +703,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'up') goUp(id);
   if (act === 'cmp') { startCompare(id); return; }
   if (act === 'media') { openMedia(id); return; }
+  if (act === 'merge') { openMerge(id); return; }
   if (act === 'me') { setMe(id); toast('تمام — الصلات اتحسبت من منظورك'); return; }
   if (act === 'edit') openForm({ person: id });
   if (act === 'del') removePerson(id);
@@ -924,6 +925,110 @@ function lightbox(p, i) {
   };
   show(); if (!dlg.open) dlg.showModal();
 }
+
+// ───────────────────────── دمج شخصين ─────────────────────────
+const MERGE_FIELDS = [['name', 'الاسم'], ['nick', 'اللقب'], ['gender', 'النوع'], ['birth', 'الميلاد'], ['death', 'الوفاة'], ['phone', 'التليفون']];
+const showVal = (f, v) => (f === 'gender' ? (v === 'f' ? 'أنثى' : v === 'm' ? 'ذكر' : '') : v || '—');
+function dupScore(a, b) {            // how likely a and b are the same person (0 = no)
+  const ta = nameTokens(norm(a.name)), tb = nameTokens(norm(b.name));
+  if (!ta.length || !tb.length || ta[0] !== tb[0]) return 0;
+  if (a.gender && b.gender && a.gender !== b.gender) return 0;
+  const sb = new Set(tb), n = ta.filter((t) => sb.has(t)).length;
+  if (n < Math.min(2, ta.length, tb.length)) return 0;
+  let s = n / Math.max(ta.length, tb.length);
+  if (a.birth && b.birth && yearOf(a) === yearOf(b)) s += 0.3;
+  return s;
+}
+function canMerge(a, b) {            // '' when OK, otherwise the reason
+  if (a.id === b.id) return 'ده نفس الشخص';
+  if (a.spouses.includes(b.id)) return 'دول متجوزين من بعض';
+  if (wouldCycle(a, b) || wouldCycle(b, a)) return 'واحد فيهم جد/جدة التاني';
+  return '';
+}
+function dupPairs() {
+  const buckets = new Map();
+  for (const p of data.people) { const t = nameTokens(norm(p.name))[0]; if (t) { if (!buckets.has(t)) buckets.set(t, []); buckets.get(t).push(p); } }
+  const out = [];
+  for (const arr of buckets.values()) for (let i = 0; i < arr.length; i++) for (let j = i + 1; j < arr.length; j++) {
+    const s = dupScore(arr[i], arr[j]);
+    if (s >= 0.6 && !canMerge(arr[i], arr[j])) out.push({ a: arr[i], b: arr[j], s });
+  }
+  return out.sort((x, y) => y.s - x.s);
+}
+const uni = (a, b, key = (x) => x) => {
+  const seen = new Set(), out = [];
+  for (const x of [...(a || []), ...(b || [])]) { const k = key(x); if (!seen.has(k)) { seen.add(k); out.push(x); } }
+  return out;
+};
+function mergePeople(K, R, pick) {   // keep K, fold R into it, repoint every link to R
+  for (const [f] of MERGE_FIELDS) { const kv = K[f] || '', rv = R[f] || ''; K[f] = kv && rv && kv !== rv ? (pick[f] === 'R' ? rv : kv) : kv || rv; }
+  for (const f of ['note', 'ask']) K[f] = K[f] && R[f] && K[f] !== R[f] ? `${K[f]}\n${R[f]}` : K[f] || R[f] || '';
+  if (K.photo && R.photo && K.photo !== R.photo) K.gallery = [...(K.gallery || []), R.photo]; else K.photo = K.photo || R.photo;
+  K.details = uni(K.details, R.details, (d) => `${d.k}|${d.v}`);
+  K.gallery = uni(K.gallery, R.gallery);
+  K.media = uni(K.media, R.media, (m) => m.src);
+  K.parents = !K.parents.length ? R.parents.slice() : !R.parents.length ? K.parents : pick.parents === 'R' ? R.parents.slice() : K.parents;
+  K.spouses = uni(K.spouses, R.spouses);
+  const re = (id) => (id === R.id ? K.id : id);
+  for (const q of data.people) { if (q === R) continue; q.parents = uni(q.parents.map(re)); q.spouses = uni(q.spouses.map(re)); }
+  K.parents = K.parents.filter((x) => x !== K.id && x !== R.id).slice(0, 2);
+  K.spouses = K.spouses.filter((x) => x !== K.id && x !== R.id);
+  data.people = data.people.filter((q) => q !== R);
+  if (data.meta.root === R.id) data.meta.root = K.id;
+  if (state.root === R.id) state.root = K.id;
+  state.picks = uni(state.picks.map(re));
+  if (state.me === R.id) { state.me = K.id; store.set('ft-me', K.id); }
+}
+function openMerge(id, otherId) {
+  const K0 = get(id); let K = K0, R = otherId ? get(otherId) : null; const pick = {};
+  const pname = (x) => x.parents.map((i) => get(i).name).join(' + ') || '—';
+  const stage1 = () => {
+    dlg.innerHTML = `<form><h2>🔀 دمج مع شخص تاني</h2>
+      <p class="hint">«${esc(K0.name)}» هو نفس الشخص المسجّل مرتين؟ اختار النسخة التانية وهتتجمع في كارت واحد، وكل العلاقات والصور والتسجيلات بتنتقل.</p>
+      <label>دوّر بالاسم<input id="mq" autocomplete="off" placeholder="اكتب جزء من الاسم…"></label><ul id="exl"></ul>
+      <div class="dlgActions"><button type="button" data-close>إلغاء</button></div></form>`;
+    $('[data-close]', dlg).onclick = () => dlg.close();
+    const list = $('#exl', dlg), draw = () => {
+      const s = norm($('#mq', dlg).value);
+      const res = (s ? data.people.filter((x) => x.id !== id && norm(x.name).includes(s)) : data.people.filter((x) => x.id !== id && dupScore(K0, x) >= 0.6)).slice(0, 30);
+      list.innerHTML = res.length ? res.map((x) => `<li data-id="${x.id}">${esc(x.name)} <small class="hint">${esc(lineage(x) || lifeText(x))}</small></li>`).join('') : '<li class="hint">مفيش أسماء مشابهة — اكتب جزء من الاسم</li>';
+    };
+    $('#mq', dlg).oninput = draw; draw();
+    list.onclick = (e) => { const li = e.target.closest('li[data-id]'); if (li) { R = get(li.dataset.id); stage2(); } };
+    if (!dlg.open) dlg.showModal(); $('#mq', dlg).focus();
+  };
+  const stage2 = () => {
+    const why = canMerge(K, R);
+    const rows = MERGE_FIELDS.filter(([f]) => K[f] && R[f] && K[f] !== R[f]);
+    const parentsConflict = K.parents.length && R.parents.length && [...K.parents].sort().join() !== [...R.parents].sort().join();
+    const radio = (name, v, label, on) => `<label class="mgopt"><input type="radio" name="${name}" value="${v}" ${on ? 'checked' : ''}><span>${esc(label)}</span></label>`;
+    const kids = (x) => (kids_of(x) || []).length;
+    dlg.innerHTML = `<form><h2>🔀 دمج</h2>
+      <div class="mgrow"><div class="mgcol keep"><small>هيفضل</small><b>${esc(K.name)}</b><small>${esc(lineage(K) || lifeText(K))}</small></div>
+        <button type="button" id="swap" title="بدّل مين هيفضل">⇄</button>
+        <div class="mgcol drop"><small>هيتشال ويتدمج</small><b>${esc(R.name)}</b><small>${esc(lineage(R) || lifeText(R))}</small></div></div>
+      ${why ? `<p class="hint" style="color:#c0392b">مينفعش دمجهم: ${esc(why)}</p>` : ''}
+      ${rows.length || parentsConflict ? '<p class="hint">فيه بيانات مختلفة، اختار اللي يفضل:</p>' : '<p class="hint">مفيش تعارض في البيانات الأساسية.</p>'}
+      ${rows.map(([f, l]) => `<div class="mgf"><b>${l}</b>${radio('f_' + f, 'K', showVal(f, K[f]), true)}${radio('f_' + f, 'R', showVal(f, R[f]), false)}</div>`).join('')}
+      ${parentsConflict ? `<div class="mgf"><b>الوالدين</b>${radio('f_parents', 'K', pname(K), true)}${radio('f_parents', 'R', pname(R), false)}</div>` : ''}
+      <p class="hint">هيتجمع كمان: الأولاد (${kids(K)} + ${kids(R)})، الأزواج، الصور والتفاصيل والتسجيلات والملاحظات. ممكن تتراجع بعدها.</p>
+      <div class="dlgActions"><button type="button" id="mback">رجوع</button><button type="button" data-close>إلغاء</button><button type="submit" class="primary" ${why ? 'disabled' : ''}>ادمج</button></div></form>`;
+    $('[data-close]', dlg).onclick = () => dlg.close();
+    if (!dlg.open) dlg.showModal();
+    $('#mback', dlg).onclick = () => { K = K0; R = null; stage1(); };
+    $('#swap', dlg).onclick = () => { [K, R] = [R, K]; stage2(); };
+    $('form', dlg).onsubmit = (e) => {
+      e.preventDefault();
+      for (const [f] of MERGE_FIELDS) { const r = dlg.querySelector(`[name=f_${f}]:checked`); if (r) pick[f] = r.value; }
+      const pr = dlg.querySelector('[name=f_parents]:checked'); if (pr) pick.parents = pr.value;
+      if (canMerge(K, R)) return;
+      const keepId = K.id, droppedName = R.name;
+      mergePeople(K, R, pick); dlg.close(); touch(); locate(keepId); toast(`✓ اتدمج «${droppedName}» في «${K.name}»`);
+    };
+  };
+  (R ? stage2 : stage1)();
+}
+const kids_of = (p) => kids.get(p.id);
 
 // ───────────────────────── صوت وفيديو ─────────────────────────
 const MAX_VIDEO = 25 * 1024 * 1024, MAX_AUDIO = 12 * 1024 * 1024;
