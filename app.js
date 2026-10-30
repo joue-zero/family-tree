@@ -128,12 +128,86 @@ function serialize(d) {
   const lines = d.people.map((p) => '    ' + JSON.stringify(clean(p)));
   return `{\n  "meta": ${JSON.stringify(d.meta)},\n  "people": [\n${lines.join(',\n')}\n  ]\n}\n`;
 }
-function touch() {
-  index(); state.dirty = true;
+// ── undo / redo: every touch() stores the state *before* the change, so any action can be rolled back ──
+let lastSnap = null, cleanSnap = null;       // current / last-saved (or loaded) serialized data
+const undoStack = [], redoStack = [];
+function summarize(a, b) {
+  try {
+    const A = new Map(JSON.parse(a).people.map((p) => [p.id, p])), B = JSON.parse(b).people, bm = new Set(B.map((p) => p.id));
+    const added = B.filter((p) => !A.has(p.id)), removed = [...A.values()].filter((p) => !bm.has(p.id));
+    const mod = B.filter((p) => A.has(p.id) && JSON.stringify(clean(p)) !== JSON.stringify(clean(A.get(p.id))));
+    const nm = (l) => l.slice(0, 2).map((p) => p.name).join('، ') + (l.length > 2 ? ` +${l.length - 2}` : '');
+    const parts = [];
+    if (added.length) parts.push('إضافة ' + nm(added));
+    if (removed.length) parts.push('حذف ' + nm(removed));
+    if (mod.length) parts.push((added.length || removed.length ? 'وتعديل علاقات ' : 'تعديل ') + nm(mod));
+    return parts.join(' ') || 'تعديل الإعدادات';
+  } catch { return 'تعديل'; }
+}
+function persistDraft() {
+  state.dirty = lastSnap !== cleanSnap || state.newPhotos.size > 0 || state.newMedia.size > 0;
+  if (!state.dirty) { store.del('ft-draft'); return; }
   const ok = store.set('ft-draft', { data: JSON.parse(serialize(data)), photos: state.photos, newPhotos: [...state.newPhotos], newMedia: [...state.newMedia] });
   if (!ok) toast('تحذير: المسودة المحلية كبيرة ومحفوظتش — احفظ على GitHub قريب');
-  render();
 }
+function touch() {
+  index(); const now = serialize(data);
+  if (lastSnap !== null && now !== lastSnap) {
+    undoStack.push({ text: lastSnap, label: summarize(lastSnap, now), t: Date.now() });
+    if (undoStack.length > 100) undoStack.shift();
+    redoStack.length = 0;
+  }
+  lastSnap = now; persistDraft(); render();
+}
+function applySnapshot(text) {
+  data = JSON.parse(text); index(); lastSnap = text;
+  if (!byId.has(state.root)) state.root = (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
+  if (state.selected && !byId.has(state.selected)) state.selected = null;
+  state.picks = state.picks.filter((i) => byId.has(i));
+  if (state.me && !byId.has(state.me)) state.me = null;
+  $('#title').textContent = data.meta.title || 'شجرة العيلة';
+  persistDraft(); render();
+}
+function undo(quiet) {
+  const e = undoStack.pop(); if (!e) { if (!quiet) toast('مفيش حاجة تتراجع عنها'); return false; }
+  redoStack.push({ text: lastSnap, label: e.label, t: e.t }); applySnapshot(e.text);
+  if (!quiet) toast('↶ تراجعت عن: ' + e.label);
+  return e.label;
+}
+function redo() {
+  const e = redoStack.pop(); if (!e) return toast('مفيش حاجة تتعاد');
+  undoStack.push({ text: lastSnap, label: e.label, t: e.t }); applySnapshot(e.text); toast('↷ أعدت: ' + e.label);
+}
+function updateUndo() {
+  $('#etool').hidden = !state.edit;
+  $('#btnUndo').disabled = !undoStack.length; $('#btnRedo').disabled = !redoStack.length;
+  $('#btnHist').disabled = !undoStack.length && !redoStack.length;
+}
+function openHistory() {
+  const fmt = (t) => new Date(t).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+  const rows = undoStack.map((e, i) => ({ e, i })).reverse();
+  dlg.innerHTML = `<form><h2>🕘 آخر التعديلات</h2>
+    ${rows.length ? `<ul class="gl hist">${rows.map(({ e, i }) => `<li><div><b>${esc(e.label)}</b><div class="hint">${fmt(e.t)}</div></div><button type="button" class="mx" data-back="${undoStack.length - i}">ارجع لقبل ده</button></li>`).join('')}</ul>` : '<p class="hint">مفيش تعديلات في الجلسة دي.</p>'}
+    ${redoStack.length ? `<p class="hint">فيه ${redoStack.length} تعديل متراجع عنه (↷ لإعادته).</p>` : ''}
+    <p class="hint">التاريخ ده بيتمسح لو قفلت الصفحة. النسخ المحفوظة على GitHub ليها تاريخها الخاص في الـ commits.</p>
+    <div class="dlgActions"><button type="button" data-close class="primary">إغلاق</button></div></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  $('form', dlg).onclick = (e) => {
+    const b = e.target.closest('[data-back]'); if (!b) return;
+    const n = +b.dataset.back; let last = ''; for (let k = 0; k < n; k++) last = undo(true) || last;
+    dlg.close(); toast(`↶ رجعت ${n} خطوة (لحد قبل: ${last})`);
+  };
+  if (!dlg.open) dlg.showModal();
+}
+$('#btnUndo').onclick = () => undo(); $('#btnRedo').onclick = redo; $('#btnHist').onclick = openHistory;
+addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || dlg.open) return;
+  const t = e.target, typing = t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable);
+  if (typing) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+  else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
+});
 // ───────────────────────── vault (client-side encryption) ─────────────────────────
 // Everything stored on GitHub (data/family.enc and every photo/audio/video as <path>.enc) is AES-256-GCM
 // encrypted in the browser with a key derived (PBKDF2-SHA256) from the family password. GitHub only sees ciphertext.
@@ -212,7 +286,7 @@ async function load() {
     try { const r = await fetch('data/family.json', { cache: 'no-cache' }); if (!r.ok) throw new Error(r.status); text = await r.text(); }
     catch { toast('مقدرتش أقرأ البيانات — شغّل الموقع من سيرفر (مش فتح الملف مباشرة)'); text = JSON.stringify(data); }
   }
-  baseText = text; data = JSON.parse(text);
+  baseText = text; data = JSON.parse(text); index(); cleanSnap = serialize(data);
   $('#btnEnc').hidden = vault.on;
   const draft = store.get('ft-draft');
   if (draft && draft.data) {
@@ -222,7 +296,7 @@ async function load() {
     for (const p of data.people) if (p.media) { const k = p.media.filter((m) => !lost.has(m.src)); n += p.media.length - k.length; p.media = k; }
     if (n) setTimeout(() => toast(`${n} تسجيل/فيديو ماتحفظوش قبل ما الصفحة تتقفل واتشالوا`), 800);
   }
-  index();
+  index(); lastSnap = serialize(data); persistDraft();
   if (state.me && !byId.has(state.me)) state.me = null;
   $('#btnMe .tx').textContent = state.me ? get(state.me).name.split(' ')[0] : 'أنا مين؟';
   state.root = data.meta.root && byId.has(data.meta.root) ? data.meta.root : (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
@@ -297,7 +371,7 @@ async function saveToGitHub() {
       if (m && referenced(path)) files.push(await fileEntry(path, new Uint8Array(await m.blob.arrayBuffer())));
     }
     await commitFiles(files, [], 'Update family tree');
-    baseText = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
+    baseText = text; cleanSnap = lastSnap = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
     toast('✓ اتحفظ — الموقع هيتحدّث خلال دقيقة تقريبًا');
     render();
   } catch (e) {
@@ -352,7 +426,7 @@ async function enableEncryption(pw, remember) {
   }
   await commitFiles(files, deletes, 'Encrypt family data');
   if (remember) await rememberKey();
-  baseText = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
+  baseText = text; cleanSnap = lastSnap = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
   $('#btnEnc').hidden = true; render();
   if (missing) toast(`تحذير: ${missing} ملف مش لاقيه واتجاهل`);
 }
@@ -490,7 +564,7 @@ function render(opts = {}) {
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps();
+  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps(); updateUndo();
 }
 
 // pan & zoom ---------------------------------------------------
