@@ -326,3 +326,9 @@ summary { cursor: pointer; font-weight: 600; }
 .card.hit { outline: 3px solid #e0a526; outline-offset: 2px; }
 #fbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 7; display: flex; align-items: center; gap: 8px; background: var(--surface); padding: 6px 10px; border-radius: 999px; box-shadow: var(--shadow); font-size: 13px; white-space: nowrap; }
 #fbar button { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+
+/* pedigree bar */
+#pbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 7; display: flex; align-items: center; gap: 8px; background: var(--surface); padding: 6px 10px; border-radius: 999px; box-shadow: var(--shadow); font-size: 13px; white-space: nowrap; }
+#pbar button { padding: 3px 10px; border-radius: 999px; font-size: 13px; }
+#view.ped #fbar { top: 56px; }
+@media (max-width: 700px) { #pbar { max-width: 96vw; gap: 5px; padding: 5px 8px; font-size: 12px; } #etool { top: 56px; } }

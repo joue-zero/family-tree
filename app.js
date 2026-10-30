@@ -24,7 +24,7 @@ let data = { meta: { title: 'شجرة العيلة' }, people: [] };
 let byId = new Map();
 let kids = new Map();
 let baseText = '';                 // family.json as last loaded/saved (for merge on save)
-const state = { hl: null, me: store.get('ft-me'), root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
+const state = { ped: null, pedGen: 4, hl: null, me: store.get('ft-me'), root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
 let cfg = { ...detectRepo(), branch: 'main', token: '', ...(store.get('ft-cfg') || {}) };
 let cur = null;                    // current layout
 
@@ -541,7 +541,8 @@ function render(opts = {}) {
   $('#btnEdit').classList.toggle('on', state.edit);
   $('#btnUp').disabled = empty || !get(state.root).parents.length;
   if (empty) { cardsBox.innerHTML = ''; svg.innerHTML = ''; cardEls.clear(); cur = null; renderPanel(); return; }
-  cur = layout(state.root);
+  if (state.ped && !byId.has(state.ped)) state.ped = null;
+  cur = currentLayout();
   svg.setAttribute('width', cur.w); svg.setAttribute('height', cur.h);
   svg.style.animation = 'none'; void svg.getBoundingClientRect(); svg.style.animation = '';
   svg.innerHTML = cur.lines.map((pl) => `<path d="M${pl.map((p) => p.join(' ')).join('L')}"/>`).join('');
@@ -565,7 +566,7 @@ function render(opts = {}) {
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps(); updateUndo(); updateFbar();
+  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps(); updateUndo(); updateFbar(); updatePbar();
 }
 
 // pan & zoom ---------------------------------------------------
@@ -607,7 +608,7 @@ function fit() {
   if (!cur) return;
   const vw = view.clientWidth - panelW(), vh = view.clientHeight - panelH();
   T.k = Math.max(innerWidth <= 700 ? 0.7 : 0.55, Math.min(1, vw / cur.w, vh / cur.h));
-  const rc = cur.byPerson.get(state.root);
+  const rc = cur.byPerson.get(state.ped || state.root) || cur.cards[0];
   T.x = panelW() + (cur.w * T.k <= vw ? (vw - cur.w * T.k) / 2 : vw / 2 - (rc.x + CARD_W / 2) * T.k);
   T.y = cur.h * T.k <= vh ? (vh - cur.h * T.k) / 2 : 10;
   applyT(true);
@@ -676,6 +677,7 @@ function pulse(id) {
 function locate(id) {
   const p = get(id); if (!p) return;
   state.selected = id; history.replaceState(null, '', '#' + id);
+  if (state.ped && !cur?.byPerson.has(id)) state.ped = null;
   if (!cur?.byPerson.has(id)) {
     state.root = rootFor(p).id; state.coll.clear();
     render();
@@ -752,7 +754,7 @@ function renderPanel() {
     ${sec('الوالدين', par, 'parent')}${sec(p.gender === 'f' ? 'الزوج' : 'الزوجة / الزوج', sp, 'spouse')}${sec('الأبناء', ch, 'child')}${sec('الإخوة', sib)}
     <div class="btnrow">
       ${ch.length || sp.length ? '<button data-act="root">🌳 اعرض شجرته</button>' : ''}
-      ${p.parents.length ? '<button data-act="up">⇡ عيلته الأصلية</button>' : ''}
+      ${p.parents.length ? '<button data-act="up">⇡ عيلته الأصلية</button><button data-act="ped">🧬 شجرة أجداده</button>' : ''}
       <button data-act="cmp">⚖ صلة القرابة</button>
       ${state.me === p.id ? '' : '<button data-act="me">👤 ده أنا</button>'}
     </div>
@@ -780,6 +782,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'root') setRoot(id);
   if (act === 'up') goUp(id);
   if (act === 'cmp') { startCompare(id); return; }
+  if (act === 'ped') { showPedigree(id); return; }
   if (act === 'media') { openMedia(id); return; }
   if (act === 'merge') { openMerge(id); return; }
   if (act === 'askdone') { get(id).ask = ''; touch(); return; }
@@ -1338,7 +1341,7 @@ function wrapName(ctx, text, maxW) {
   return lines;
 }
 async function renderTreeCanvas(openAll) {
-  forceOpen = openAll; let L; try { L = layout(state.root); } finally { forceOpen = false; }
+  forceOpen = openAll; let L; try { L = state.ped ? layoutPedigree(state.ped, state.pedGen) : layout(state.root); } finally { forceOpen = false; }
   const C = { bg: '#f5efe4', surface: '#fffdf8', ink: '#2b2723', muted: '#8b8176', line: '#bfb29c', m: '#3d8b86', f: '#c75d78', accent: '#2e6f5d' };
   const TOP = 90, BOT = 40, W = L.w, H = L.h + TOP + BOT;
   const sc = Math.min(2, 12000 / Math.max(W, H));
@@ -1555,6 +1558,61 @@ function openFilter() {
 $('#btnFilter').onclick = openFilter;
 $('#fshow').onclick = openFilter;
 $('#fclear').onclick = () => { Object.assign(flt, { q: '', gender: '', life: '', by: '', ey: '', photo: '', unsure: false, dkey: '', dval: '', under: '' }); applyHighlight([]); };
+
+// ───────────────────────── عرض الأجداد (pedigree) ─────────────────────────
+// Inverted tree: the person at the bottom, parents above, grandparents above them… Same card/line format as layout().
+function layoutPedigree(pid, maxG) {
+  const seen = new Set([pid]);
+  const build = (p, depth) => {
+    const n = { p, depth, ps: [], ghost: false };
+    if (depth < maxG) {
+      const ps = p.parents.map(get).sort((a, b) => (a.gender === 'm' ? 0 : 1) - (b.gender === 'm' ? 0 : 1));   // father first → ends up on the right (RTL)
+      for (const q of ps) {
+        if (seen.has(q.id)) n.ps.push({ p: q, depth: depth + 1, ps: [], ghost: true });                       // same ancestor reached twice (cousin marriage)
+        else { seen.add(q.id); n.ps.push(build(q, depth + 1)); }
+      }
+    }
+    return n;
+  };
+  const root = build(get(pid), 0); let maxD = 0;
+  const measure = (n) => {
+    maxD = Math.max(maxD, n.depth); n.ps.forEach(measure);
+    n.kw = n.ps.reduce((s, c) => s + c.w, 0) + Math.max(0, n.ps.length - 1) * GAP_X; n.w = Math.max(CARD_W, n.kw);
+  };
+  measure(root);
+  const cards = [], lines = [], byPerson = new Map();
+  const place = (n, left) => {
+    n.cx = left + n.w / 2; n.y = (maxD - n.depth) * (CARD_H + GAP_Y);
+    let kx = left + (n.w - n.kw) / 2;
+    for (const c of n.ps) { place(c, kx); kx += c.w + GAP_X; }
+    const c = { x: n.cx - CARD_W / 2, y: n.y, p: n.p, ghost: n.ghost, main: n.depth === 0, up: false, tog: null };
+    c.key = n.ghost ? `g:ped:${n.p.id}:${cards.length}` : n.p.id;
+    cards.push(c); if (!n.ghost) byPerson.set(n.p.id, c);
+    if (n.ps.length) {
+      const yb = n.y - GAP_Y / 2, xs = n.ps.map((k) => k.cx);
+      lines.push([[n.cx, n.y], [n.cx, yb]], [[Math.min(...xs, n.cx), yb], [Math.max(...xs, n.cx), yb]]);
+      for (const k of n.ps) lines.push([[k.cx, yb], [k.cx, k.y + CARD_H]]);
+    }
+  };
+  place(root, 0);
+  const W = root.w, H = maxD * (CARD_H + GAP_Y) + CARD_H;
+  for (const c of cards) { c.x = W - c.x - CARD_W + PAD; c.y += PAD; }
+  return { cards, lines: lines.map((pl) => pl.map(([x, y]) => [W - x + PAD, y + PAD])), w: W + PAD * 2, h: H + PAD * 2, byPerson };
+}
+const currentLayout = () => (state.ped ? layoutPedigree(state.ped, state.pedGen) : layout(state.root));
+function showPedigree(id) {
+  const p = get(id); if (!p) return;
+  if (!p.parents.length) return toast(`مفيش أجداد مسجّلين لـ ${p.name}`);
+  state.ped = id; state.selected = null; render({ fit: true });
+}
+function exitPedigree() { const id = state.ped; state.ped = null; render({ fit: true }); if (id && cur?.byPerson.has(id)) setTimeout(() => centerOn(cur.byPerson.get(id)), 80); }
+function updatePbar() {
+  const on = !!state.ped; $('#pbar').hidden = !on; view.classList.toggle('ped', on);
+  if (on) { $('#ptxt').textContent = `🧬 أجداد ${get(state.ped).name}`; $('#pgen').textContent = state.pedGen; }
+}
+$('#pplus').onclick = () => { state.pedGen = Math.min(10, state.pedGen + 1); render({ fit: true }); };
+$('#pminus').onclick = () => { state.pedGen = Math.max(1, state.pedGen - 1); render({ fit: true }); };
+$('#pexit').onclick = exitPedigree;
 
 // ───────────────────────── صلة القرابة ─────────────────────────
 const G = (b, m, f) => (b.gender === 'f' ? f : m);
