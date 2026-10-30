@@ -1014,15 +1014,68 @@ $('#quickCam').onchange = async (e) => {
     touch(); toast('✓ الصورة اتضافت لـ ' + p.name);
   } catch { toast('الصورة دي مش مدعومة'); }
 };
+// A photo can be tagged with several people: the same file path simply sits in each person's gallery.
+// Caption/date live in data.meta.photoInfo[path] (meta is already serialized, so no schema change).
+const photoPeople = (path) => data.people.filter((x) => (x.gallery || []).includes(path));
 function lightbox(p, i) {
   const n = p.gallery.length;
   const show = () => {
-    dlg.innerHTML = `<div class="lb"><img src="${esc(src(p.gallery[i]))}" alt=""><div class="dlgActions" style="justify-content:space-between;align-items:center">
-      <button data-n="-1" ${n < 2 ? 'disabled' : ''}>السابقة</button><span class="hint">${i + 1} / ${n} — ${esc(p.name)}</span><button data-n="1" ${n < 2 ? 'disabled' : ''}>التالية</button><button data-close>إغلاق</button></div></div>`;
+    const path = p.gallery[i], who = photoPeople(path), info = (data.meta.photoInfo || {})[path] || {};
+    dlg.innerHTML = `<div class="lb"><img src="${esc(src(path))}" alt="">
+      ${info.title || info.date ? `<div class="lbcap"><b>${esc(info.title || '')}</b> <span class="hint">${esc(info.date || '')}</span></div>` : ''}
+      <div class="chips lbwho"><span class="hint">في الصورة:</span> ${who.map((x) => chip(x)).join('') || '<span class="hint">محدش متوسوم</span>'}</div>
+      <div class="dlgActions" style="justify-content:space-between;align-items:center">
+        <button data-n="-1" ${n < 2 ? 'disabled' : ''}>السابقة</button><span class="hint">${i + 1} / ${n}</span><button data-n="1" ${n < 2 ? 'disabled' : ''}>التالية</button>
+        ${state.edit ? '<button id="lbTag">👥 وسم أشخاص</button><button id="lbInfo">✎ عنوان وتاريخ</button>' : ''}<button data-close>إغلاق</button></div></div>`;
     dlg.querySelector('[data-close]').onclick = () => dlg.close();
     dlg.querySelectorAll('[data-n]').forEach((b) => (b.onclick = () => { i = (i + +b.dataset.n + n) % n; show(); }));
+    dlg.querySelector('.lbwho').onclick = (e) => { const c = e.target.closest('[data-go]'); if (c) { dlg.close(); locate(c.dataset.go); } };
+    const back = () => { const k = p.gallery.indexOf(path); if (k < 0) return dlg.close(); i = k; show(); };
+    const t = dlg.querySelector('#lbTag'); if (t) t.onclick = () => openTag(path, back);
+    const f = dlg.querySelector('#lbInfo'); if (f) f.onclick = () => openPhotoInfo(path, back);
   };
   show(); if (!dlg.open) dlg.showModal();
+}
+function openTag(path, back) {
+  const before = new Set(photoPeople(path).map((x) => x.id)), sel = new Set(before);
+  dlg.innerHTML = `<form><h2>👥 مين في الصورة دي؟</h2>
+    <input id="tq" placeholder="دوّر بالاسم…" autocomplete="off" style="width:100%;padding:9px 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg)">
+    <ul id="tl" class="gl" style="max-height:44vh"></ul><p class="hint" id="tc"></p>
+    <div class="dlgActions"><button type="button" id="tback">رجوع</button><button type="submit" class="primary">حفظ</button></div></form>`;
+  const list = $('#tl', dlg), draw = () => {
+    const s = norm($('#tq', dlg).value);
+    const rows = data.people.filter((x) => !s || norm(x.name).includes(s)).sort((a, b) => sel.has(b.id) - sel.has(a.id)).slice(0, 80);
+    list.innerHTML = rows.map((x) => `<li><label style="display:flex;gap:8px;align-items:center;margin:0;width:100%;color:var(--ink)"><input type="checkbox" value="${x.id}" ${sel.has(x.id) ? 'checked' : ''}><span>${esc(x.name)} <small class="hint">${esc(lineage(x) || lifeText(x))}</small></span></label></li>`).join('');
+    $('#tc', dlg).textContent = `${sel.size} متوسوم`;
+  };
+  $('#tq', dlg).oninput = draw; draw();
+  list.onchange = (e) => { const c = e.target; if (c.type === 'checkbox') { if (c.checked) sel.add(c.value); else sel.delete(c.value); $('#tc', dlg).textContent = `${sel.size} متوسوم`; } };
+  $('#tback', dlg).onclick = back;
+  $('form', dlg).onsubmit = (e) => {
+    e.preventDefault();
+    for (const x of data.people) {
+      const has = (x.gallery || []).includes(path);
+      if (sel.has(x.id) && !has) x.gallery = [...(x.gallery || []), path];
+      else if (!sel.has(x.id) && before.has(x.id) && has) x.gallery = x.gallery.filter((g) => g !== path);
+    }
+    touch(); back();
+  };
+  $('#tq', dlg).focus();
+}
+function openPhotoInfo(path, back) {
+  const info = (data.meta.photoInfo || {})[path] || {};
+  dlg.innerHTML = `<form><h2>✎ تفاصيل الصورة</h2>
+    <label>عنوان<input name="t" value="${esc(info.title)}" placeholder="مثال: فرح أحمد ونورا"></label>
+    <label>التاريخ (أي صيغة)<input name="d" value="${esc(info.date)}" placeholder="2010-07-15 أو صيف 2010"></label>
+    <div class="dlgActions"><button type="button" id="ibk">رجوع</button><button type="submit" class="primary">حفظ</button></div></form>`;
+  $('#ibk', dlg).onclick = back;
+  $('form', dlg).onsubmit = (e) => {
+    e.preventDefault(); const fd = new FormData(e.target), t = fd.get('t').trim(), d = fd.get('d').trim();
+    data.meta.photoInfo = { ...(data.meta.photoInfo || {}) };
+    if (t || d) data.meta.photoInfo[path] = { title: t, date: d }; else delete data.meta.photoInfo[path];
+    if (!Object.keys(data.meta.photoInfo).length) delete data.meta.photoInfo;
+    touch(); back();
+  };
 }
 
 // ───────────────────────── دمج شخصين ─────────────────────────

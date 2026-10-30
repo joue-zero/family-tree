@@ -314,3 +314,7 @@ summary { cursor: pointer; font-weight: 600; }
 [dir=rtl] .bdg.uns { transform: none; }
 .card:has(.bdg.uns) { border-top-style: dashed; }
 .kv.uns { background: color-mix(in srgb, #e0a526 14%, var(--surface)); border-radius: 10px; padding: 6px 10px; }
+
+/* tagged photos */
+.lbcap { margin: 10px 2px 2px; }
+.lbwho { margin: 8px 0; align-items: center; }
