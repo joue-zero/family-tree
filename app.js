@@ -761,7 +761,7 @@ function renderPanel() {
       <button data-add="parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ أب / أم</button>
       <button data-add="sibling" ${p.parents.length ? '' : 'disabled title="أضف الأب أو الأم الأول"'}>+ أخ / أخت</button></div>
       <div class="btnrow"><button data-act="media">🎙 صوت / 🎬 فيديو</button><button data-act="merge">🔀 دمج مع شخص</button></div>
-      <div class="btnrow"><button data-act="unsure">${p.unsure ? '✓ أكّدت المعلومة' : '⚠ علّم غير مؤكد'}</button></div>
+      <div class="btnrow"><button data-act="unsure">${p.unsure ? '✓ أكّدت المعلومة' : '⚠ علّم غير مؤكد'}</button><button data-act="qphoto">📷 صورة سريعة</button></div>
       <div class="btnrow"><button data-act="edit">✎ تعديل البيانات</button><button class="danger" data-act="del">حذف</button></div>` : ''}`;
 }
 panel.addEventListener('click', (e) => {
@@ -783,6 +783,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'media') { openMedia(id); return; }
   if (act === 'merge') { openMerge(id); return; }
   if (act === 'askdone') { get(id).ask = ''; touch(); return; }
+  if (act === 'qphoto') { quickFor = id; $('#quickCam').click(); return; }
   if (act === 'unsure') { const q = get(id); q.unsure = !q.unsure; touch(); toast(q.unsure ? '⚠ اتعلّم غير مؤكد' : '✓ اتأكّدت'); return; }
   if (act === 'me') { setMe(id); toast('تمام — الصلات اتحسبت من منظورك'); return; }
   if (act === 'edit') openForm({ person: id });
@@ -854,7 +855,8 @@ function openForm({ rel, anchor, person }) {
     ${canExisting ? '<div class="tabs"><button type="button" data-mode="new" class="on">شخص جديد</button><button type="button" data-mode="exist">شخص موجود في الشجرة</button></div>' : ''}
     <div id="newBox">
       <div class="photoPick"><div class="av" id="pv" style="--g:var(--${g === 'f' ? 'f' : 'm'})">${photo ? `<img src="${esc(photo)}">` : '📷'}</div>
-        <label class="btn" style="margin:0"><button type="button" id="pickPh">اختر صورة</button><input type="file" id="ph" accept="image/*" hidden></label></div>
+        <label class="btn" style="margin:0"><button type="button" id="pickPh">اختر صورة</button><input type="file" id="ph" accept="image/*" hidden></label>
+        <button type="button" id="pickCam">📷 صوّر</button><input type="file" id="phCam" accept="image/*" capture="environment" hidden></div>
       <label>الاسم<input name="name" required value="${esc(P?.name)}" autocomplete="off"></label>
       <label class="chk" id="autoRow" hidden><input type="checkbox" id="autoOn" checked> <span id="autoTxt"></span></label>
       <label>لقب / اسم الشهرة (اختياري)<input name="nick" value="${esc(P?.nick)}"></label>
@@ -874,7 +876,7 @@ function openForm({ rel, anchor, person }) {
       <div id="dRows"></div><button type="button" id="dAdd">+ تفصيلة</button>
       <datalist id="dKeys"><option>الوظيفة<option>العنوان<option>المحافظة<option>التعليم<option>تاريخ الجواز<option>الهواية<option>تاريخ الوفاة<option>مكان الدفن</datalist>
       <label>ألبوم الصور</label>
-      <div id="gal" class="gal"></div><button type="button" id="gAdd">+ أضف صور</button><input type="file" id="gIn" accept="image/*" multiple hidden>
+      <div id="gal" class="gal"></div><button type="button" id="gAdd">+ أضف صور</button> <button type="button" id="gCam">📷 صوّر</button><input type="file" id="gIn" accept="image/*" multiple hidden><input type="file" id="gCamIn" accept="image/*" capture="environment" hidden>
       ${otherSel}
     </div>
     <div id="existBox" hidden>
@@ -889,10 +891,11 @@ function openForm({ rel, anchor, person }) {
   const f = $('#pf', dlg), q = (s) => $(s, dlg);
   f.querySelectorAll('input[name=gender]').forEach((r) => r.addEventListener('change', () => { g = r.value; q('#pv').style.setProperty('--g', `var(--${g === 'f' ? 'f' : 'm'})`); }));
   q('#pickPh').onclick = () => q('#ph').click();
-  q('#ph').onchange = async (e) => {
-    const file = e.target.files[0]; if (!file) return;
+  const setMain = async (e) => {
+    const file = e.target.files[0]; e.target.value = ''; if (!file) return;
     try { newPhoto = await resizeImage(file); q('#pv').innerHTML = `<img src="${newPhoto}">`; } catch { toast('الصورة دي مش مدعومة'); }
   };
+  q('#ph').onchange = setMain; q('#phCam').onchange = setMain; q('#pickCam').onclick = () => q('#phCam').click();
   // extra details + gallery
   const det = (P?.details || []).map((d) => ({ ...d }));
   const gal = (P?.gallery || []).map((path) => ({ path, src: src(path) }));
@@ -907,10 +910,11 @@ function openForm({ rel, anchor, person }) {
   q('#dRows').oninput = (e) => { const t = e.target; if (t.dataset.dk) det[t.dataset.dk].k = t.value; if (t.dataset.dv) det[t.dataset.dv].v = t.value; };
   q('#dRows').onclick = (e) => { const x = e.target.closest('[data-dx]'); if (x) { det.splice(+x.dataset.dx, 1); drawDet(); } };
   q('#gAdd').onclick = () => q('#gIn').click();
-  q('#gIn').onchange = async (e) => {
+  const addGal = async (e) => {
     for (const file of e.target.files) { try { gal.push({ path: null, src: await resizeImage(file, 1000, false) }); } catch { toast('صورة مش مدعومة'); } }
     e.target.value = ''; drawGal();
   };
+  q('#gIn').onchange = addGal; q('#gCamIn').onchange = addGal; q('#gCam').onclick = () => q('#gCamIn').click();
   q('#gal').onclick = (e) => { const x = e.target.closest('[data-gx]'); if (x) { gal.splice(+x.dataset.gx, 1); drawGal(); } };
   dlg.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => dlg.close()));
   dlg.querySelectorAll('[data-mode]').forEach((b) => (b.onclick = () => {
@@ -999,6 +1003,17 @@ function linkRel(rel, A, X, other) {
   if (rel === 'parent') { if (!A.parents.includes(X.id) && A.parents.length < 2) A.parents.push(X.id); }
   if (rel === 'sibling') { X.parents = A.parents.slice(); }
 }
+// one-tap camera from the panel: shoot → added to the gallery (and becomes the main photo if there isn't one)
+let quickFor = null;
+$('#quickCam').onchange = async (e) => {
+  const file = e.target.files[0]; e.target.value = ''; const p = quickFor && get(quickFor); if (!file || !p) return;
+  try {
+    const stamp = Date.now().toString(36), gp = `photos/${p.id}-g${stamp}q.jpg`;
+    state.photos[gp] = await resizeImage(file, 1000, false); state.newPhotos.add(gp); p.gallery = [...(p.gallery || []), gp];
+    if (!p.photo) { const pp = `photos/${p.id}-${stamp}.jpg`; state.photos[pp] = await resizeImage(file); state.newPhotos.add(pp); p.photo = pp; }
+    touch(); toast('✓ الصورة اتضافت لـ ' + p.name);
+  } catch { toast('الصورة دي مش مدعومة'); }
+};
 function lightbox(p, i) {
   const n = p.gallery.length;
   const show = () => {
