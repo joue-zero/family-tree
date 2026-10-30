@@ -746,6 +746,17 @@ function resizeImage(file, size = 360, square = true) {
   });
 }
 
+// "ياسر" + father "محمود عبد الرحمن السيد" → "ياسر محمود عبد الرحمن" (عبد/أبو/أم + الاسم بتتحسب اسم واحد)
+function nameTokens(n) {
+  const w = (n || '').trim().split(/\s+/).filter(Boolean), out = [];
+  for (let i = 0; i < w.length; i++) out.push(/^(عبد|أبو|ابو|أم|ام|بنت|ابن)$/.test(w[i]) && w[i + 1] ? `${w[i]} ${w[++i]}` : w[i]);
+  return out;
+}
+function autoFullName(first, father) {
+  if (!father || nameTokens(first).length !== 1) return null;
+  const depth = data.meta.nameDepth || 3;
+  return [first.trim(), ...nameTokens(father.name).slice(0, depth - 1)].join(' ');
+}
 function openForm({ rel, anchor, person }) {
   const editing = !!person, P = editing ? get(person) : null, A = anchor ? get(anchor) : null;
   if (rel === 'parent' && A.parents.length >= 2) return toast('عنده والدين بالفعل');
@@ -764,6 +775,7 @@ function openForm({ rel, anchor, person }) {
       <div class="photoPick"><div class="av" id="pv" style="--g:var(--${g === 'f' ? 'f' : 'm'})">${photo ? `<img src="${esc(photo)}">` : '📷'}</div>
         <label class="btn" style="margin:0"><button type="button" id="pickPh">اختر صورة</button><input type="file" id="ph" accept="image/*" hidden></label></div>
       <label>الاسم<input name="name" required value="${esc(P?.name)}" autocomplete="off"></label>
+      <label class="chk" id="autoRow" hidden><input type="checkbox" id="autoOn" checked> <span id="autoTxt"></span></label>
       <label>لقب / اسم الشهرة (اختياري)<input name="nick" value="${esc(P?.nick)}"></label>
       <div class="seg">
         <label><input type="radio" name="gender" value="m" required ${g === 'm' ? 'checked' : ''}><span>ذكر</span></label>
@@ -832,6 +844,17 @@ function openForm({ rel, anchor, person }) {
     list.onclick = (e) => { const li = e.target.closest('li'); if (li) { chosen = li.dataset.id; draw(); } };
   }
 
+  // auto full name: only for new children/siblings whose father is known
+  const fatherNow = () => {
+    if (editing) return null;
+    const ps = rel === 'child' ? [A, get((q('select[name=other]') || {}).value)] : rel === 'sibling' ? A.parents.map(get) : [];
+    return ps.find((x) => x && x.gender === 'm') || null;
+  };
+  const autoNow = () => (mode === 'new' ? autoFullName(f.querySelector('[name=name]').value, fatherNow()) : null);
+  const updAuto = () => { const full = autoNow(); q('#autoRow').hidden = !full; if (full) q('#autoTxt').textContent = 'كمّل الاسم تلقائيًا: ' + full; };
+  f.querySelector('[name=name]').addEventListener('input', updAuto);
+  const oth = f.querySelector('select[name=other]'); if (oth) oth.addEventListener('change', updAuto);
+
   const submit = (again) => {
     if (mode === 'exist') {
       if (!chosen) return toast('اختار شخص من القايمة');
@@ -845,7 +868,8 @@ function openForm({ rel, anchor, person }) {
     const fd = new FormData(f);
     const v = (k) => (fd.get(k) || '').toString().trim();
     const obj = editing ? P : { id: uid(), parents: [], spouses: [] };
-    Object.assign(obj, { name: v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note') });
+    const fullName = q('#autoOn').checked ? autoNow() : null;
+    Object.assign(obj, { name: fullName || v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note') });
     if (editing && !v('death') && P.death === '?') obj.death = '?';
     obj.details = det.map((d) => ({ k: d.k.trim(), v: d.v.trim() })).filter((d) => d.k && d.v);
     obj.gallery = gal.map((g, i) => {
@@ -1275,6 +1299,8 @@ $('#btnSettings').onclick = openSettings;
 function openSettings() {
   dlg.innerHTML = `<form id="sf"><h2>الإعدادات</h2>
     <label>اسم العيلة (العنوان)<input name="title" value="${esc(data.meta.title)}"></label>
+    <label>عدد الأسماء في الاسم التلقائي (أول اسم + أسماء الأب والجد)
+      <select name="nameDepth">${[2, 3, 4].map((n) => `<option value="${n}" ${(data.meta.nameDepth || 3) === n ? 'selected' : ''}>${['', '', 'ثنائي (الاسم + الأب)', 'ثلاثي (+ الجد)', 'رباعي'][n]}</option>`).join('')}</select></label>
     <div class="row2"><label>صاحب الريبو (GitHub user)<input name="owner" value="${esc(cfg.owner)}" placeholder="username"></label>
       <label>اسم الريبو<input name="repo" value="${esc(cfg.repo)}" placeholder="family-tree"></label></div>
     <label>Branch<input name="branch" value="${esc(cfg.branch)}"></label>
@@ -1298,6 +1324,7 @@ function openSettings() {
     cfg = { owner: v('owner'), repo: v('repo'), branch: v('branch') || 'main', token: v('token') };
     store.set('ft-cfg', cfg);
     if (v('title') !== data.meta.title) { data.meta.title = v('title') || 'شجرة العيلة'; $('#title').textContent = data.meta.title; document.title = data.meta.title; touch(); }
+    if (+v('nameDepth') !== (data.meta.nameDepth || 3)) { data.meta.nameDepth = +v('nameDepth'); touch(); }
     dlg.close(); toast('اتحفظت الإعدادات');
   };
   dlg.showModal();
