@@ -224,7 +224,7 @@ async function load() {
   }
   index();
   if (state.me && !byId.has(state.me)) state.me = null;
-  $('#btnMe').textContent = state.me ? `👤 ${get(state.me).name.split(' ')[0]}` : '👤 أنا مين؟';
+  $('#btnMe .tx').textContent = state.me ? get(state.me).name.split(' ')[0] : 'أنا مين؟';
   state.root = data.meta.root && byId.has(data.meta.root) ? data.meta.root : (data.people.find((p) => !p.parents.length) || data.people[0] || {}).id || null;
   $('#title').textContent = data.meta.title || 'شجرة العيلة';
   document.title = data.meta.title || 'شجرة العيلة';
@@ -524,18 +524,20 @@ mini.addEventListener('pointerdown', (e) => { e.stopPropagation(); mini.setPoint
 mini.addEventListener('pointermove', (e) => { if (e.buttons || e.pressure) miniJump(e); });
 // keep the main pan handler from grabbing minimap gestures
 mini.addEventListener('pointerup', (e) => e.stopPropagation());
-const panelW = () => (!$('#panel').hidden && innerWidth > 700 ? 340 : 0);
+const sheet = () => !$('#panel').hidden && innerWidth <= 700;                 // phone: panel is a bottom sheet
+const panelW = () => (!$('#panel').hidden && innerWidth > 700 ? Math.min(340, innerWidth / 2) : 0);
+const panelH = () => (sheet() ? view.clientHeight * 0.5 : 0);
 function fit() {
   if (!cur) return;
-  const vw = view.clientWidth - panelW(), vh = view.clientHeight;
-  T.k = Math.max(0.55, Math.min(1, vw / cur.w, vh / cur.h));
+  const vw = view.clientWidth - panelW(), vh = view.clientHeight - panelH();
+  T.k = Math.max(innerWidth <= 700 ? 0.7 : 0.55, Math.min(1, vw / cur.w, vh / cur.h));
   const rc = cur.byPerson.get(state.root);
   T.x = panelW() + (cur.w * T.k <= vw ? (vw - cur.w * T.k) / 2 : vw / 2 - (rc.x + CARD_W / 2) * T.k);
   T.y = cur.h * T.k <= vh ? (vh - cur.h * T.k) / 2 : 10;
   applyT(true);
 }
 function centerOn(c) {
-  const vw = view.clientWidth - panelW(), vh = view.clientHeight;
+  const vw = view.clientWidth - panelW(), vh = view.clientHeight - panelH();
   T.x = panelW() + vw / 2 - (c.x + CARD_W / 2) * T.k; T.y = vh / 2 - (c.y + CARD_H / 2) * T.k; applyT(true);
 }
 function zoomAt(f, cx, cy) {
@@ -653,11 +655,13 @@ function renderPanel() {
     <button class="x" data-act="close">✕</button>
     <div class="hero">
       <div class="av" style="--g:var(--${p.gender === 'f' ? 'f' : 'm'})">${photoSrc(p) ? `<img src="${esc(photoSrc(p))}">` : esc([...p.name][0])}</div>
+      <div class="hinfo">
       <h2>${esc(p.name)}${p.death ? ' <small class="sub">(رحمه الله)</small>' : ''}</h2>
       ${p.nick ? `<div class="sub">${esc(p.nick)}</div>` : ''}
       <div class="sub">${esc(lineage(p))}</div>
       ${state.me && state.me !== p.id && shortRel(get(state.me), p) ? `<div class="sub" style="color:var(--accent);font-weight:600">بالنسبة لك: ${esc(shortRel(get(state.me), p))}</div>` : ''}
       ${life ? `<div class="sub">${esc(life)}${age ? ` · ${esc(age)}` : ''}</div>` : ''}
+      </div>
     </div>
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
@@ -760,8 +764,8 @@ function openForm({ rel, anchor, person }) {
       <div class="seg">
         <label><input type="radio" name="gender" value="m" required ${g === 'm' ? 'checked' : ''}><span>ذكر</span></label>
         <label><input type="radio" name="gender" value="f" ${g === 'f' ? 'checked' : ''}><span>أنثى</span></label></div>
-      <div class="row2"><label>الميلاد (سنة أو تاريخ كامل)<input name="birth" value="${esc(P?.birth)}" placeholder="1985 أو 1985-03-27"></label>
-        <label>الوفاة (لو متوفى)<input name="death" value="${esc(P?.death === '?' ? '' : P?.death)}" placeholder="2015 أو 2015-10-02 أو ؟"></label></div>
+      <div class="row2"><label>الميلاد (سنة أو تاريخ كامل)<input name="birth" value="${esc(P?.birth)}" placeholder="1985-03-27"></label>
+        <label>الوفاة (لو متوفى)<input name="death" value="${esc(P?.death === '?' ? '' : P?.death)}" placeholder="2015-10-02 أو ؟"></label></div>
       <p class="hint" style="margin:4px 0 0">اكتب التاريخ كامل (سنة-شهر-يوم) عشان يظهر في «القادم» (أعياد الميلاد وذكرى الوفاة).</p>
       <label>رقم التليفون<input name="phone" type="tel" value="${esc(P?.phone)}"></label>
       <label>ملاحظات<textarea name="note">${esc(P?.note)}</textarea></label>
@@ -1173,7 +1177,7 @@ function shortRel(a, b) {
 }
 function setMe(id) {
   state.me = id || null; store.set('ft-me', state.me);
-  $('#btnMe').textContent = state.me ? `👤 ${get(state.me).name.split(' ')[0]}` : '👤 أنا مين؟';
+  $('#btnMe .tx').textContent = state.me ? get(state.me).name.split(' ')[0] : 'أنا مين؟';
   render(); if (id) locate(id);
 }
 function openMe() {
