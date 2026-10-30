@@ -60,7 +60,14 @@ function index() {
   for (const arr of kids.values()) arr.sort((a, b) => yearOf(a) - yearOf(b));
 }
 const get = (id) => byId.get(id);
-const src = (path) => (path && (state.photos[path] || path)) || '';
+const src = (path) => {            // pending local data URL → decrypted blob URL (encrypted mode) → plain path
+  if (!path) return '';
+  if (state.photos[path]) return state.photos[path];
+  if (!vault.on) return path;
+  const u = blobUrls.get(path);
+  if (!u && !failedBlobs.has(path)) ensureBlob(path);
+  return u || '';
+};
 const photoSrc = (p) => src(p.photo);
 const lifeText = (p, full) => {      // cards show the year only; the panel shows full dates
   const f = (s) => (full ? s : (s || '').match(/\d{4}/)?.[0] ?? s);
@@ -127,14 +134,86 @@ function touch() {
   if (!ok) toast('تحذير: المسودة المحلية كبيرة ومحفوظتش — احفظ على GitHub قريب');
   render();
 }
+// ───────────────────────── vault (client-side encryption) ─────────────────────────
+// Everything stored on GitHub (data/family.enc and every photo/audio/video as <path>.enc) is AES-256-GCM
+// encrypted in the browser with a key derived (PBKDF2-SHA256) from the family password. GitHub only sees ciphertext.
+const enc = new TextEncoder(), dec = new TextDecoder();
+const vault = { on: false, key: null, salt: null, iter: 600000 };
+const bytesB64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+const b64Bytes = (s) => Uint8Array.from(atob(s.replace(/\s/g, '')), (c) => c.charCodeAt(0));
+const dataUrlBytes = (u) => b64Bytes(u.split(',')[1]);
+async function deriveKey(pw, salt, iter) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+}
+async function encBytes(u8) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, vault.key, u8));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return out;
+}
+async function decBytes(u8) {
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: u8.subarray(0, 12) }, vault.key, u8.subarray(12)));
+}
+async function makeEnvelope(text) {
+  return JSON.stringify({ v: 1, kdf: 'PBKDF2-SHA256', iter: vault.iter, salt: bytesB64(vault.salt), data: bytesB64(await encBytes(enc.encode(text))) }) + '\n';
+}
+const openEnvelope = async (env) => dec.decode(await decBytes(b64Bytes(env.data)));
+async function rememberKey() {
+  store.set('ft-key', { salt: bytesB64(vault.salt), k: bytesB64(new Uint8Array(await crypto.subtle.exportKey('raw', vault.key))) });
+}
+async function recallKey(env) {
+  const m = store.get('ft-key'); if (!m || m.salt !== env.salt) return null;
+  try { return await crypto.subtle.importKey('raw', b64Bytes(m.k), 'AES-GCM', true, ['encrypt', 'decrypt']); } catch { return null; }
+}
+function askPassword(env) {
+  return new Promise((resolve) => {
+    const L = $('#lock'), inp = $('#lockPw'), err = $('#lockErr'), btn = $('#lockGo');
+    L.hidden = false; setTimeout(() => inp.focus(), 50);
+    const go = async () => {
+      if (!inp.value) return;
+      btn.disabled = true; err.textContent = '';
+      try {
+        vault.salt = b64Bytes(env.salt); vault.iter = env.iter;
+        vault.key = await deriveKey(inp.value, vault.salt, env.iter);
+        const text = await openEnvelope(env);          // throws if the password is wrong
+        if ($('#lockRemember').checked) await rememberKey();
+        L.hidden = true; inp.value = ''; resolve(text);
+      } catch { err.textContent = 'كلمة السر غلط'; btn.disabled = false; inp.select(); }
+    };
+    btn.onclick = go; inp.onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  });
+}
+
+// decrypted photo/audio/video blobs (fetched as <path>.enc on demand)
+const blobUrls = new Map(), loadingBlobs = new Map(), failedBlobs = new Set(); let blobTimer = 0;
+const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webm: 'video/webm', mp4: 'video/mp4', m4a: 'audio/mp4', ogg: 'audio/ogg', mp3: 'audio/mpeg', wav: 'audio/wav', mov: 'video/quicktime' };
+function ensureBlob(path) {
+  if (blobUrls.has(path)) return Promise.resolve(blobUrls.get(path));
+  if (loadingBlobs.has(path)) return loadingBlobs.get(path);
+  const pr = (async () => {
+    const r = await fetch(path + '.enc'); if (!r.ok) throw new Error(r.status);
+    const bytes = await decBytes(new Uint8Array(await r.arrayBuffer()));
+    const url = URL.createObjectURL(new Blob([bytes], { type: MIME[path.split('.').pop().toLowerCase()] || 'application/octet-stream' }));
+    blobUrls.set(path, url); clearTimeout(blobTimer); blobTimer = setTimeout(() => render(), 150);
+    return url;
+  })().catch(() => { failedBlobs.add(path); return ''; }).finally(() => loadingBlobs.delete(path));
+  loadingBlobs.set(path, pr); return pr;
+}
+
 async function load() {
-  try {
-    const r = await fetch('data/family.json', { cache: 'no-cache' });
-    baseText = await r.text();
-    data = JSON.parse(baseText);
-  } catch (e) {
-    toast('مقدرتش أقرأ data/family.json — شغّل الموقع من سيرفر (مش فتح الملف مباشرة)');
+  let text = null, env = null;
+  try { const r = await fetch('data/family.enc', { cache: 'no-cache' }); if (r.ok) env = await r.json(); } catch { /* missing or offline */ }
+  if (env) {
+    vault.on = true; vault.salt = b64Bytes(env.salt); vault.iter = env.iter;
+    const k = await recallKey(env);
+    if (k) { vault.key = k; try { text = await openEnvelope(env); } catch { vault.key = null; store.del('ft-key'); } }
+    if (text == null) text = await askPassword(env);
+  } else {
+    try { const r = await fetch('data/family.json', { cache: 'no-cache' }); if (!r.ok) throw new Error(r.status); text = await r.text(); }
+    catch { toast('مقدرتش أقرأ البيانات — شغّل الموقع من سيرفر (مش فتح الملف مباشرة)'); text = JSON.stringify(data); }
   }
+  baseText = text; data = JSON.parse(text);
+  $('#btnEnc').hidden = vault.on;
   const draft = store.get('ft-draft');
   if (draft && draft.data) {
     data = draft.data; state.photos = draft.photos || {}; state.newPhotos = new Set(draft.newPhotos || []); state.dirty = true;
@@ -179,33 +258,45 @@ function mergeRemote(remote, base) {         // keep other people's edits made s
   }
   data.people = out;
 }
+async function commitFiles(files, deletes, message) {
+  const R = `/repos/${cfg.owner}/${cfg.repo}`;
+  const ref = await gh(`${R}/git/ref/heads/${cfg.branch}`);
+  const parent = await gh(`${R}/git/commits/${ref.object.sha}`);
+  const tree = [];
+  for (const f of files) {
+    const blob = await gh(`${R}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: f.content, encoding: 'base64' }) });
+    tree.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
+  }
+  for (const d of deletes) tree.push({ path: d, mode: '100644', type: 'blob', sha: null });
+  const t = await gh(`${R}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: parent.tree.sha, tree }) });
+  const c = await gh(`${R}/git/commits`, { method: 'POST', body: JSON.stringify({ message, tree: t.sha, parents: [ref.object.sha] }) });
+  await gh(`${R}/git/refs/heads/${cfg.branch}`, { method: 'PATCH', body: JSON.stringify({ sha: c.sha }) });
+}
+async function remotePlain() {             // what's on GitHub right now, decrypted (for merging other people's edits)
+  const R = `/repos/${cfg.owner}/${cfg.repo}`;
+  if (vault.on) {
+    const f = await gh(`${R}/contents/data/family.enc?ref=${cfg.branch}`);
+    return openEnvelope(JSON.parse(unb64(f.content)));
+  }
+  return unb64((await gh(`${R}/contents/data/family.json?ref=${cfg.branch}`)).content);
+}
+const fileEntry = async (path, u8) => (vault.on ? { path: path + '.enc', content: bytesB64(await encBytes(u8)) } : { path, content: bytesB64(u8) });
+const referenced = (path) => data.people.some((p) => p.photo === path || (p.gallery || []).includes(path) || (p.media || []).some((m) => m.src === path));
+
 async function saveToGitHub() {
   if (!cfg.token || !cfg.owner || !cfg.repo) { toast('لازم تضبط الريبو والـ Token الأول'); return openSettings(); }
   const btn = $('#btnSave'); btn.disabled = true; btn.firstChild.textContent = 'جاري الحفظ… ';
   try {
-    const R = `/repos/${cfg.owner}/${cfg.repo}`;
-    const remoteFile = await gh(`${R}/contents/data/family.json?ref=${cfg.branch}`);
-    const remoteText = unb64(remoteFile.content);
+    const remoteText = await remotePlain();
     if (remoteText !== baseText) { mergeRemote(JSON.parse(remoteText), JSON.parse(baseText || remoteText)); index(); toast('اتدمجت تعديلات تانية من حد تاني'); }
-    const text = serialize(data);
-    const files = [{ path: 'data/family.json', content: b64(text) }];
-    for (const path of state.newPhotos) {
-      if (data.people.some((p) => p.photo === path || (p.gallery || []).includes(path)) && state.photos[path]) files.push({ path, content: state.photos[path].split(',')[1] });
-    }
+    const text = serialize(data), files = [];
+    files.push(vault.on ? { path: 'data/family.enc', content: b64(await makeEnvelope(text)) } : { path: 'data/family.json', content: b64(text) });
+    for (const path of state.newPhotos) if (referenced(path) && state.photos[path]) files.push(await fileEntry(path, dataUrlBytes(state.photos[path])));
     for (const path of state.newMedia) {
       const m = state.mblob.get(path);
-      if (m && data.people.some((p) => (p.media || []).some((x) => x.src === path))) files.push({ path, content: await blobB64(m.blob) });
+      if (m && referenced(path)) files.push(await fileEntry(path, new Uint8Array(await m.blob.arrayBuffer())));
     }
-    const ref = await gh(`${R}/git/ref/heads/${cfg.branch}`);
-    const parent = await gh(`${R}/git/commits/${ref.object.sha}`);
-    const tree = [];
-    for (const f of files) {
-      const blob = await gh(`${R}/git/blobs`, { method: 'POST', body: JSON.stringify({ content: f.content, encoding: 'base64' }) });
-      tree.push({ path: f.path, mode: '100644', type: 'blob', sha: blob.sha });
-    }
-    const t = await gh(`${R}/git/trees`, { method: 'POST', body: JSON.stringify({ base_tree: parent.tree.sha, tree }) });
-    const c = await gh(`${R}/git/commits`, { method: 'POST', body: JSON.stringify({ message: 'Update family tree', tree: t.sha, parents: [ref.object.sha] }) });
-    await gh(`${R}/git/refs/heads/${cfg.branch}`, { method: 'PATCH', body: JSON.stringify({ sha: c.sha }) });
+    await commitFiles(files, [], 'Update family tree');
     baseText = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
     toast('✓ اتحفظ — الموقع هيتحدّث خلال دقيقة تقريبًا');
     render();
@@ -215,6 +306,57 @@ async function saveToGitHub() {
     btn.disabled = false; btn.firstChild.textContent = 'حفظ ';
   }
 }
+
+// one-time: encrypt the existing plaintext data + files and delete the plaintext from the repo
+function openEnable() {
+  dlg.innerHTML = `<form><h2>🔒 تشفير الشجرة</h2>
+    <p class="hint">كل البيانات والصور والصوت والفيديو هتتشفّر على جهازك قبل ما تترفع، وGitHub مش هيشوف غير بيانات مش مفهومة. أي حد يفتح الموقع هيحتاج كلمة السر دي.</p>
+    <label>كلمة سر العيلة (جملة طويلة، 10 حروف على الأقل)<input id="ePw" type="password" autocomplete="new-password"></label>
+    <label>أعد كتابتها<input id="ePw2" type="password" autocomplete="new-password"></label>
+    <label class="chk"><input type="checkbox" id="eRem" checked> افتكرني على الجهاز ده</label>
+    <p class="hint"><b>مهم:</b> كلمة السر مش بتتخزن في أي مكان ومفيش طريقة لاسترجاعها. لو ضاعت، البيانات المشفّرة ماتتفتحش. احفظها عند حد موثوق.<br>
+    التاريخ القديم للـ commits على GitHub هيفضل فيه النسخة القديمة غير المشفّرة (لو كنت دخّلت بيانات حقيقية قبل كده، اعمل ريبو جديد).</p>
+    <p class="hint" id="eStat"></p>
+    <div class="dlgActions"><button type="button" data-close>إلغاء</button><button type="submit" class="primary" id="eGo">شفّر وارفع</button></div></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  $('form', dlg).onsubmit = async (e) => {
+    e.preventDefault();
+    const pw = $('#ePw', dlg).value, st = $('#eStat', dlg);
+    if (pw.length < 10) return (st.textContent = 'كلمة السر قصيرة — اكتب جملة من 10 حروف على الأقل');
+    if (pw !== $('#ePw2', dlg).value) return (st.textContent = 'الكلمتين مش زي بعض');
+    if (!cfg.token || !cfg.owner || !cfg.repo) { dlg.close(); toast('لازم تضبط الريبو والـ Token الأول'); return openSettings(); }
+    $('#eGo', dlg).disabled = true; st.textContent = 'جاري التشفير والرفع… (ممكن ياخد دقيقة)';
+    try { await enableEncryption(pw, $('#eRem', dlg).checked); dlg.close(); toast('✓ التشفير اتفعّل — الموقع هيطلب كلمة السر من دلوقتي'); }
+    catch (err) { vault.on = false; vault.key = null; st.textContent = 'فشل: ' + err.message; $('#eGo', dlg).disabled = false; }
+  };
+  dlg.showModal(); $('#ePw', dlg).focus();
+}
+async function enableEncryption(pw, remember) {
+  const R = `/repos/${cfg.owner}/${cfg.repo}`;
+  vault.salt = crypto.getRandomValues(new Uint8Array(16)); vault.iter = 600000; vault.key = await deriveKey(pw, vault.salt, vault.iter);
+  vault.on = true;
+  const text = serialize(data), files = [{ path: 'data/family.enc', content: b64(await makeEnvelope(text)) }];
+  // every plaintext file currently in the repo under photos/ or media/ (+ the plaintext data file) gets deleted
+  const ref = await gh(`${R}/git/ref/heads/${cfg.branch}`), commit = await gh(`${R}/git/commits/${ref.object.sha}`);
+  const listing = (await gh(`${R}/git/trees/${commit.tree.sha}?recursive=1`)).tree.filter((x) => x.type === 'blob').map((x) => x.path);
+  const deletes = listing.filter((p) => p === 'data/family.json' || (/^(photos|media)\//.test(p) && !p.endsWith('.enc') && !p.endsWith('.gitkeep')));
+  const paths = new Set();
+  for (const p of data.people) { if (p.photo) paths.add(p.photo); (p.gallery || []).forEach((g) => paths.add(g)); (p.media || []).forEach((m) => m.t !== 'link' && paths.add(m.src)); }
+  let missing = 0;
+  for (const path of paths) {
+    let bytes;
+    if (state.photos[path]) bytes = dataUrlBytes(state.photos[path]);
+    else if (state.mblob.has(path)) bytes = new Uint8Array(await state.mblob.get(path).blob.arrayBuffer());
+    else { const r = await fetch(path, { cache: 'no-cache' }); if (!r.ok) { missing++; continue; } bytes = new Uint8Array(await r.arrayBuffer()); }
+    files.push({ path: path + '.enc', content: bytesB64(await encBytes(bytes)) });
+  }
+  await commitFiles(files, deletes, 'Encrypt family data');
+  if (remember) await rememberKey();
+  baseText = text; state.dirty = false; state.newPhotos.clear(); state.newMedia.clear(); store.del('ft-draft');
+  $('#btnEnc').hidden = true; render();
+  if (missing) toast(`تحذير: ${missing} ملف مش لاقيه واتجاهل`);
+}
+$('#btnEnc').onclick = openEnable;
 
 // ───────────────────────── layout ─────────────────────────
 let forceOpen = false;
@@ -501,6 +643,7 @@ const chip = (p, extra = '') => `<span class="chip" data-go="${p.id}"><span clas
 function renderPanel() {
   const p = state.selected && get(state.selected);
   if (!p || state.cmp) { panel.hidden = true; return; }
+  if ([...panel.querySelectorAll('audio,video')].some((m) => !m.paused && !m.ended)) return;   // don't interrupt playback
   const wasHidden = panel.hidden; panel.hidden = false;
   if (wasHidden) panel.style.animation = 'none', void panel.offsetWidth, panel.style.animation = '';
   const par = p.parents.map(get), sp = p.spouses.map(get), ch = kids.get(p.id) || [], sib = siblings(p), ed = state.edit;
@@ -520,7 +663,7 @@ function renderPanel() {
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
     ${(p.details || []).length ? `<h3>تفاصيل</h3>${p.details.map((d) => `<div class="kv"><b>${esc(d.k)}:</b> ${esc(d.v)}</div>`).join('')}` : ''}
     ${(p.media || []).length ? `<h3>تسجيلات وفيديو</h3>${p.media.map((m, i) => mediaHTML(m, i, ed)).join('')}` : ''}
-    ${(p.gallery || []).length ? `<h3>الصور</h3><div class="gal">${p.gallery.map((g, i) => `<img src="${esc(src(g))}" data-gal="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
+    ${(p.gallery || []).length ? `<h3>الصور</h3><div class="gal">${p.gallery.map((g, i) => (src(g) ? `<img src="${esc(src(g))}" data-gal="${i}" alt="">` : '<div class="gph">…</div>')).join('')}</div>` : ''}
     ${sec('الوالدين', par, 'parent')}${sec(p.gender === 'f' ? 'الزوج' : 'الزوجة / الزوج', sp, 'spouse')}${sec('الأبناء', ch, 'child')}${sec('الإخوة', sib)}
     <div class="btnrow">
       ${ch.length || sp.length ? '<button data-act="root">🌳 اعرض شجرته</button>' : ''}
@@ -540,6 +683,8 @@ panel.addEventListener('click', (e) => {
   const un = t.closest('[data-unlink]');
   if (un) { const [k, oid] = un.dataset.unlink.split(':'); unlink(id, oid, k); return; }
   const go = t.closest('[data-go]'); if (go) { locate(go.dataset.go); return; }
+  const ml = t.closest('[data-mload]');
+  if (ml) { ml.textContent = 'جاري فك التشفير…'; ensureBlob(ml.dataset.mload).then((u) => { if (!u) toast('مقدرتش أفك تشفير الملف'); renderPanel(); }); return; }
   const md = t.closest('[data-mdel]');
   if (md) { if (confirm('تشيل التسجيل/الفيديو ده من الشخص؟')) { get(id).media.splice(+md.dataset.mdel, 1); touch(); } return; }
   const gi = t.closest('[data-gal]'); if (gi) { lightbox(get(id), +gi.dataset.gal); return; }
@@ -739,13 +884,14 @@ function lightbox(p, i) {
 
 // ───────────────────────── صوت وفيديو ─────────────────────────
 const MAX_VIDEO = 25 * 1024 * 1024, MAX_AUDIO = 12 * 1024 * 1024;
-const msrc = (s) => state.mblob.get(s)?.url || s;
+const msrc = (s) => state.mblob.get(s)?.url || (vault.on ? blobUrls.get(s) || '' : s);
 const ytId = (u) => (u.match(/(?:youtu\.be\/|v=|embed\/|shorts\/)([\w-]{11})/) || [])[1];
 function mediaHTML(m, i, ed) {
   const del = ed ? `<button class="mx" data-mdel="${i}" title="شيل">×</button>` : '';
   const title = esc(m.title || (m.t === 'audio' ? 'تسجيل صوتي' : 'فيديو'));
   let body;
-  if (m.t === 'audio') body = `<audio controls preload="none" src="${esc(msrc(m.src))}"></audio>`;
+  if (m.t !== 'link' && !msrc(m.src)) body = `<button class="mload" data-mload="${esc(m.src)}">▶ ${m.t === 'audio' ? 'شغّل الصوت' : 'شغّل الفيديو'} (فك التشفير)</button>`;
+  else if (m.t === 'audio') body = `<audio controls preload="none" src="${esc(msrc(m.src))}"></audio>`;
   else if (m.t === 'link') {
     const y = ytId(m.src);
     body = y ? `<iframe src="https://www.youtube-nocookie.com/embed/${y}" allowfullscreen loading="lazy"></iframe>` : `<a href="${esc(m.src)}" target="_blank" rel="noopener">${esc(m.src)}</a>`;
@@ -1105,6 +1251,7 @@ function openSettings() {
     <p class="hint">الـ Token بيتخزن في متصفحك بس. اعمل Fine-grained token لريبو الشجرة بس بصلاحية <b>Contents: Read and write</b>. اللي يشوف الموقع بس مش محتاج Token.</p>
     <div class="dlgActions">
       <button type="button" id="dl">تنزيل JSON</button>
+      ${vault.on ? '<button type="button" id="forget">🔒 اقفل وانسَ المفتاح</button>' : ''}
       ${state.dirty ? '<button type="button" id="drop" class="danger">تجاهل التعديلات المحلية</button>' : ''}
       <button type="button" data-close>إلغاء</button><button type="submit" class="primary">حفظ</button></div></form>`;
   const f = $('#sf', dlg);
@@ -1112,6 +1259,7 @@ function openSettings() {
   $('#dl', dlg).onclick = () => {
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([serialize(data)], { type: 'application/json' })); a.download = 'family.json'; a.click();
   };
+  const fg = $('#forget', dlg); if (fg) fg.onclick = () => { store.del('ft-key'); location.reload(); };
   const drop = $('#drop', dlg);
   if (drop) drop.onclick = () => { if (confirm('هتتمسح كل التعديلات اللي لسه ماتحفظتش. متأكد؟')) { store.del('ft-draft'); location.reload(); } };
   f.onsubmit = (e) => {

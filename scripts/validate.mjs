@@ -2,6 +2,20 @@
 import { readFileSync, existsSync } from 'node:fs';
 
 const errors = [];
+
+// Encrypted mode: only the envelope can be checked (the content is ciphertext by design).
+if (!existsSync('data/family.json') && existsSync('data/family.enc')) {
+  try {
+    const env = JSON.parse(readFileSync('data/family.enc', 'utf8'));
+    if (env.v !== 1 || !env.salt || !env.iter || !env.data) throw new Error('missing fields');
+    console.log('OK — encrypted data/family.enc (' + Math.round(env.data.length / 1024) + ' KB)');
+    process.exit(0);
+  } catch (e) {
+    console.error('data/family.enc is not a valid envelope:', e.message);
+    process.exit(1);
+  }
+}
+
 let data;
 try {
   data = JSON.parse(readFileSync('data/family.json', 'utf8'));

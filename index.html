@@ -29,6 +29,7 @@
     <button id="btnCmp" title="صلة القرابة بين أشخاص">⚖ صلة القرابة</button>
     <button id="btnEdit" title="وضع التعديل">✎ تعديل</button>
     <button id="btnSave" class="primary" hidden>حفظ <b id="dirtyMark">●</b></button>
+    <button id="btnEnc" hidden title="شفّر الشجرة بكلمة سر">🔒 فعّل التشفير</button>
     <button id="btnInstall" hidden>📲 ثبّت</button>
     <button id="btnSettings" title="الإعدادات">⚙</button>
   </div>
@@ -49,6 +50,10 @@
   </div>
 </main>
 
+<div id="lock" hidden><div class="lockbox"><div class="lk">🔒</div><h2>شجرة العيلة</h2><p>اكتب كلمة سر العيلة</p>
+  <input id="lockPw" type="password" autocomplete="current-password" placeholder="كلمة السر">
+  <label class="chk"><input type="checkbox" id="lockRemember" checked> افتكرني على الجهاز ده</label>
+  <button id="lockGo" class="primary">فتح</button><div id="lockErr"></div></div></div>
 <aside id="panel" hidden></aside>
 <section id="cmp" hidden></section>
 <dialog id="dlg"></dialog>

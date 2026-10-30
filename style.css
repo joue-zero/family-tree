@@ -231,3 +231,16 @@ dialog:has(.lb) { width: min(900px, 96vw); }
 .bd > div { flex: 1; min-width: 0; }
 .bd .when { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .bd.soon .when { color: var(--accent-ink); background: var(--accent); padding: 2px 10px; border-radius: 999px; font-weight: 600; }
+
+/* lock screen */
+#lock { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: var(--bg); }
+.lockbox { width: min(360px, 90vw); text-align: center; background: var(--surface); padding: 28px 24px; border-radius: 22px; box-shadow: var(--shadow); }
+.lockbox .lk { font-size: 44px; }
+.lockbox h2 { margin: 6px 0 2px; }
+.lockbox p { color: var(--muted); margin: 0 0 14px; }
+.lockbox input[type=password] { width: 100%; padding: 11px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); text-align: center; }
+.lockbox .chk { display: block; margin: 12px 0; font-size: 13px; color: var(--muted); }
+.lockbox button { width: 100%; padding: 10px; }
+#lockErr { color: #c0392b; margin-top: 10px; min-height: 1.4em; }
+.mload { width: 100%; }
+.gph { aspect-ratio: 1; display: grid; place-items: center; color: var(--muted); background: var(--bg); border-radius: 10px; }
