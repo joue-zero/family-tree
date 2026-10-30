@@ -485,6 +485,7 @@ function render(opts = {}) {
     el.dataset.id = c.p.id; el.dataset.key = c.key;
     el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}${state.me === c.p.id && !c.ghost ? ' me' : ''}`;
     el.innerHTML = cardHTML(c);
+    el.tabIndex = 0; el.setAttribute('role', 'button'); el.setAttribute('aria-label', c.p.name + (c.ghost ? ' (مذكور في فرع تاني)' : ''));
     el.style.transform = `translate(${c.x}px,${c.y}px)`;
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
@@ -572,6 +573,9 @@ const zc = (f) => zoomAt(f, view.clientWidth / 2, view.clientHeight / 2);
 $('#zIn').onclick = () => zc(1.25); $('#zOut').onclick = () => zc(0.8); $('#zFit').onclick = fit;
 
 // card interactions -------------------------------------------
+cardsBox.addEventListener('keydown', (e) => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('card')) { e.preventDefault(); e.target.click(); }
+});
 cardsBox.addEventListener('click', (e) => {
   if (moved) return;
   const el = e.target.closest('.card'); if (!el) return;
@@ -831,8 +835,10 @@ function openForm({ rel, anchor, person }) {
   const submit = (again) => {
     if (mode === 'exist') {
       if (!chosen) return toast('اختار شخص من القايمة');
-      const other = (q('#otherEx') || {}).value;
-      linkRel(rel, A, get(chosen), other);
+      const other = (q('#otherEx') || {}).value, X = get(chosen);
+      const bad = rel === 'child' ? wouldCycle(A, X) : rel === 'parent' ? wouldCycle(X, A) : rel === 'sibling' ? A.parents.some((pp) => wouldCycle(get(pp), X)) : false;
+      if (bad) return toast('مينفعش — كده حد هيبقى جد نفسه');
+      linkRel(rel, A, X, other);
       finish(chosen, again); return;
     }
     if (!f.reportValidity()) return;
@@ -868,6 +874,15 @@ function openForm({ rel, anchor, person }) {
   const ag = q('#again'); if (ag) ag.onclick = () => submit(true);
   dlg.showModal();
   if (!editing) setTimeout(() => f.querySelector('[name=name]')?.focus(), 50);
+}
+// would making `parent` a parent of `child` create a loop (someone being their own ancestor)?
+function wouldCycle(parent, child) {
+  const seen = new Set(), st = [child];
+  while (st.length) {
+    const x = st.pop(); if (x.id === parent.id) return true;
+    if (seen.has(x.id)) continue; seen.add(x.id); (kids.get(x.id) || []).forEach((c) => st.push(c));
+  }
+  return false;
 }
 function linkRel(rel, A, X, other) {
   if (rel === 'child') { X.parents = [A.id, other].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i).slice(0, 2); }
@@ -1211,11 +1226,23 @@ function describe(a, b) {                  // كل الصلات اللي تخل�
   }
   return { lines: out, common: br ? br.common : [] };
 }
+function linkChain(a, b) {                 // shortest path through parent/child/spouse links
+  const prev = new Map([[a.id, null]]), q = [a];
+  while (q.length) {
+    const x = q.shift(); if (x.id === b.id) break;
+    for (const y of [...x.parents.map(get), ...(kids.get(x.id) || []), ...x.spouses.map(get)]) if (!prev.has(y.id)) { prev.set(y.id, x); q.push(y); }
+  }
+  if (!prev.has(b.id)) return null;
+  const path = []; for (let c = b; c; c = prev.get(c.id)) path.unshift(c);
+  if (path.length > 9) return null;
+  const lab = (x, y) => (x.parents.includes(y.id) ? G(y, 'أب', 'أم') : x.spouses.includes(y.id) ? G(y, 'زوج', 'زوجة') : G(y, 'ابن', 'بنت'));
+  return path.slice(1).map((y, i) => `${y.name} (${lab(path[i], y)} ${path[i].name})`).join(' ← ');
+}
 function pairHTML(a, b) {
   const x = describe(a, b), y = describe(b, a);
   const lines = [...x.lines, ...y.lines];
   const common = x.common.length ? `<div class="hint">الجد المشترك: ${x.common.map((c) => esc(c.name)).join(' و')}</div>` : '';
-  return `<div class="pair"><div class="pn">${esc(a.name)} ↔ ${esc(b.name)}</div>${lines.length ? lines.map((l) => `<div>${esc(l)}</div>`).join('') : '<div class="hint">مفيش صلة مسجّلة بينهم لسه — ممكن تكون محتاجة تضيف أب/أم أو جواز ناقص.</div>'}${common}</div>`;
+  return `<div class="pair"><div class="pn">${esc(a.name)} ↔ ${esc(b.name)}</div>${lines.length ? lines.map((l) => `<div>${esc(l)}</div>`).join('') : (() => { const ch = linkChain(a, b); return ch ? `<div>مرتبطين بالمصاهرة (مفيش قرابة دم): ${esc(a.name)} ← ${esc(ch)}</div>` : '<div class="hint">مفيش صلة مسجّلة بينهم لسه — ممكن تكون محتاجة تضيف أب/أم أو جواز ناقص.</div>'; })()}${common}</div>`;
 }
 function startCompare(id) { state.cmp = true; state.picks = id ? [id] : []; render(); }
 function togglePick(id) {
