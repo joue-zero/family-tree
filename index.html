@@ -20,6 +20,7 @@
   <h1 id="title">شجرة العيلة</h1>
   <div id="searchwrap">
     <input id="search" type="search" placeholder="ابحث عن اسم…" autocomplete="off">
+    <button id="btnFilter" type="button" title="فلتر وبحث متقدم (مدينة، وظيفة، سنة ميلاد…)">🔎</button>
     <ul id="results" hidden></ul>
   </div>
   <div class="actions">
@@ -38,6 +39,7 @@
 
 <main id="view">
   <div id="stage"><svg id="lines"></svg><div id="cards"></div></div>
+  <div id="fbar" hidden><span id="fcount"></span><button id="fshow" type="button">تعديل الفلتر</button><button id="fclear" type="button" title="امسح التظليل">✕</button></div>
   <div id="zoom">
     <button id="zIn" title="تكبير">+</button>
     <button id="zOut" title="تصغير">−</button>

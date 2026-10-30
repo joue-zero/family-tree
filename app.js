@@ -24,7 +24,7 @@ let data = { meta: { title: 'شجرة العيلة' }, people: [] };
 let byId = new Map();
 let kids = new Map();
 let baseText = '';                 // family.json as last loaded/saved (for merge on save)
-const state = { me: store.get('ft-me'), root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
+const state = { hl: null, me: store.get('ft-me'), root: null, selected: null, edit: false, cmp: false, picks: [], coll: new Map(), dirty: false, photos: {}, newPhotos: new Set(), mblob: new Map(), newMedia: new Set() };
 let cfg = { ...detectRepo(), branch: 'main', token: '', ...(store.get('ft-cfg') || {}) };
 let cur = null;                    // current layout
 
@@ -558,14 +558,14 @@ function render(opts = {}) {
       requestAnimationFrame(() => requestAnimationFrame(() => (el.style.opacity = '')));
     }
     el.dataset.id = c.p.id; el.dataset.key = c.key;
-    el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}${state.me === c.p.id && !c.ghost ? ' me' : ''}`;
+    el.className = `card ${c.p.gender || ''}${c.ghost ? ' ghost' : ''}${c.p.death ? ' dead' : ''}${state.selected === c.p.id && !c.ghost && !state.cmp ? ' sel' : ''}${state.picks.includes(c.p.id) && !c.ghost ? ' pick' : ''}${state.me === c.p.id && !c.ghost ? ' me' : ''}${state.hl ? (state.hl.has(c.p.id) && !c.ghost ? ' hit' : ' dim') : ''}`;
     el.innerHTML = cardHTML(c);
     el.tabIndex = 0; el.setAttribute('role', 'button'); el.setAttribute('aria-label', c.p.name + (c.ghost ? ' (مذكور في فرع تاني)' : ''));
     el.style.transform = `translate(${c.x}px,${c.y}px)`;
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps(); updateUndo();
+  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps(); updateUndo(); updateFbar();
 }
 
 // pan & zoom ---------------------------------------------------
@@ -1467,6 +1467,94 @@ function exportICS() {
   a.download = 'family-events.ics'; a.click();
 }
 $('#btnBday').onclick = openBday;
+
+// ───────────────────────── فلتر وبحث متقدم ─────────────────────────
+const flt = { q: '', gender: '', life: '', by: '', ey: '', photo: '', unsure: false, dkey: '', dval: '', under: '' };
+const fltActive = (f = flt) => Object.values(f).some((v) => v && v !== false);
+function descIds(rootId) {
+  const s = new Set();
+  (function w(p) { if (s.has(p.id)) return; s.add(p.id); (kids.get(p.id) || []).forEach(w); })(get(rootId));
+  return s;
+}
+function filterPeople(f = flt) {
+  const q = norm(f.q), dv = norm(f.dval), by = parseInt(f.by) || 0, ey = parseInt(f.ey) || 0;
+  const under = f.under && byId.has(f.under) ? descIds(f.under) : null;
+  return data.people.filter((p) => {
+    if (under && !under.has(p.id)) return false;
+    if (q && !norm([p.name, p.nick, p.note, p.phone, ...(p.details || []).map((d) => d.v)].join(' ')).includes(q)) return false;
+    if (f.gender && p.gender !== f.gender) return false;
+    if (f.life === 'alive' && p.death) return false;
+    if (f.life === 'dead' && !p.death) return false;
+    const y = yearOf(p);
+    if ((by || ey) && y === 9999) return false;
+    if (by && y < by) return false;
+    if (ey && y > ey) return false;
+    if (f.photo === 'has' && !p.photo) return false;
+    if (f.photo === 'no' && p.photo) return false;
+    if (f.unsure && !p.unsure) return false;
+    if (f.dkey || dv) {
+      if (!(p.details || []).some((d) => (!f.dkey || d.k === f.dkey) && (!dv || norm(d.v).includes(dv)))) return false;
+    }
+    return true;
+  });
+}
+function exportCSV(list) {
+  const cell = (s) => `"${String(s ?? '').replace(/"/g, '""')}"`;
+  const rows = [['الاسم', 'النوع', 'الميلاد', 'الوفاة', 'التليفون', 'التفاصيل', 'ملاحظات'],
+    ...list.map((p) => [p.name, p.gender === 'f' ? 'أنثى' : 'ذكر', p.birth || '', p.death || '', p.phone || '', (p.details || []).map((d) => `${d.k}: ${d.v}`).join('؛ '), p.note || ''])];
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['﻿' + rows.map((r) => r.map(cell).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' }));
+  a.download = 'family-people.csv'; a.click();
+}
+function applyHighlight(ids) {
+  state.hl = ids.length ? new Set(ids) : null;
+  if (state.hl) {                                   // open every collapsed branch above a match
+    for (const id of ids) { const seen = new Set(), st = [get(id)]; while (st.length) { const y = st.pop(); if (seen.has(y.id)) continue; seen.add(y.id); state.coll.set(y.id, false); y.parents.forEach((i) => st.push(get(i))); } }
+  }
+  render();
+  if (state.hl && !ids.some((id) => cur?.byPerson.has(id))) locate(ids[0]);
+}
+function updateFbar() {
+  const bar = $('#fbar'); bar.hidden = !state.hl;
+  if (state.hl) { const vis = [...state.hl].filter((id) => cur?.byPerson.has(id)).length; $('#fcount').textContent = `🔎 ${state.hl.size} نتيجة${vis < state.hl.size ? ` (ظاهر منهم ${vis})` : ''}`; }
+}
+function openFilter() {
+  const keys = [...new Set(data.people.flatMap((p) => (p.details || []).map((d) => d.k)))].sort();
+  const names = data.people.map((p) => p.name);
+  const sel = (id, v, opts) => `<select id="${id}">${opts.map(([val, l]) => `<option value="${val}" ${v === val ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+  const underName = flt.under && byId.has(flt.under) ? get(flt.under).name : '';
+  dlg.innerHTML = `<form><h2>🔎 فلتر وبحث متقدم</h2>
+    <label>كلمة (في الاسم، اللقب، الملاحظات، التليفون، التفاصيل)<input id="fq" value="${esc(flt.q)}" autocomplete="off"></label>
+    <div class="row2"><label>النوع${sel('fg', flt.gender, [['', 'الكل'], ['m', 'ذكر'], ['f', 'أنثى']])}</label><label>الحالة${sel('fl', flt.life, [['', 'الكل'], ['alive', 'على قيد الحياة'], ['dead', 'متوفى']])}</label></div>
+    <div class="row2"><label>الميلاد من سنة<input id="fby" inputmode="numeric" value="${esc(flt.by)}" placeholder="1950"></label><label>إلى سنة<input id="fey" inputmode="numeric" value="${esc(flt.ey)}" placeholder="1990"></label></div>
+    <div class="row2"><label>تفصيلة${sel('fk', flt.dkey, [['', 'أي تفصيلة'], ...keys.map((k) => [esc(k), esc(k)])])}</label><label>قيمتها فيها<input id="fv" value="${esc(flt.dval)}" placeholder="مثال: إسكندرية"></label></div>
+    <div class="row2"><label>الصورة${sel('fp', flt.photo, [['', 'الكل'], ['has', 'عنده صورة'], ['no', 'من غير صورة']])}</label>
+      <label>تحت فرع (نسل)<input id="fu" list="fnames" value="${esc(underName)}" placeholder="اسم الجد/الأب"><datalist id="fnames">${[...new Set(names)].slice(0, 400).map((n) => `<option value="${esc(n)}">`).join('')}</datalist></label></div>
+    <label class="chk"><input type="checkbox" id="fz" ${flt.unsure ? 'checked' : ''}> ⚠ غير مؤكد بس</label>
+    <p class="hint" id="fc"></p><ul class="gl" id="fr" style="max-height:32vh"></ul>
+    <div class="dlgActions"><button type="button" id="fclr">مسح</button><button type="button" id="fcsv">⬇ CSV</button><button type="button" id="fhl" class="primary">🌳 ظلّل على الشجرة</button><button type="button" data-close>إغلاق</button></div></form>`;
+  const read = () => {
+    flt.q = $('#fq', dlg).value.trim(); flt.gender = $('#fg', dlg).value; flt.life = $('#fl', dlg).value; flt.by = $('#fby', dlg).value.trim(); flt.ey = $('#fey', dlg).value.trim();
+    flt.dkey = $('#fk', dlg).value; flt.dval = $('#fv', dlg).value.trim(); flt.photo = $('#fp', dlg).value; flt.unsure = $('#fz', dlg).checked;
+    const un = $('#fu', dlg).value.trim(); flt.under = un ? (data.people.find((p) => p.name === un) || {}).id || '' : '';
+  };
+  const draw = () => {
+    read(); const res = fltActive() ? filterPeople() : [];
+    $('#fc', dlg).textContent = fltActive() ? `${res.length} نتيجة` : 'اختار شرط أو أكتر';
+    $('#fr', dlg).innerHTML = res.slice(0, 100).map((p) => `<li data-go="${p.id}"><b>${esc(p.name)}</b> <small class="hint">${esc([lifeText(p), ...(p.details || []).slice(0, 2).map((d) => d.v)].filter(Boolean).join(' · '))}</small></li>`).join('') + (res.length > 100 ? '<li class="hint">… والباقي في التظليل أو CSV</li>' : '');
+    $('#fhl', dlg).disabled = !res.length; $('#fcsv', dlg).disabled = !res.length;
+  };
+  dlg.querySelector('form').addEventListener('input', draw); dlg.querySelector('form').addEventListener('change', draw);
+  $('#fr', dlg).onclick = (e) => { const li = e.target.closest('[data-go]'); if (li) { dlg.close(); locate(li.dataset.go); } };
+  $('#fhl', dlg).onclick = () => { read(); const ids = filterPeople().map((p) => p.id); dlg.close(); applyHighlight(ids); };
+  $('#fcsv', dlg).onclick = () => { read(); exportCSV(filterPeople()); };
+  $('#fclr', dlg).onclick = () => { Object.assign(flt, { q: '', gender: '', life: '', by: '', ey: '', photo: '', unsure: false, dkey: '', dval: '', under: '' }); applyHighlight([]); openFilter(); };
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  draw(); dlg.showModal(); $('#fq', dlg).focus();
+}
+$('#btnFilter').onclick = openFilter;
+$('#fshow').onclick = openFilter;
+$('#fclear').onclick = () => { Object.assign(flt, { q: '', gender: '', life: '', by: '', ey: '', photo: '', unsure: false, dkey: '', dval: '', under: '' }); applyHighlight([]); };
 
 // ───────────────────────── صلة القرابة ─────────────────────────
 const G = (b, m, f) => (b.gender === 'f' ? f : m);
