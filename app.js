@@ -119,7 +119,7 @@ function countDesc(p, seen = new Set()) {
 // ───────────────────────── persistence ─────────────────────────
 const clean = (p) => {
   const o = {};
-  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'details', 'gallery', 'media', 'parents', 'spouses']) {
+  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'ask', 'details', 'gallery', 'media', 'parents', 'spouses']) {
     const v = p[k]; if (v && (!Array.isArray(v) || v.length)) o[k] = v;
   }
   return o;
@@ -490,7 +490,7 @@ function render(opts = {}) {
   }
   for (const [k, el] of cardEls) if (!keep.has(k)) { el.style.opacity = 0; setTimeout(() => el.remove(), 320); cardEls.delete(k); }
   if (opts.fit) fit();
-  renderPanel(); renderCmp(); drawMini(); updateBday();
+  renderPanel(); renderCmp(); drawMini(); updateBday(); updateGaps();
 }
 
 // pan & zoom ---------------------------------------------------
@@ -669,6 +669,7 @@ function renderPanel() {
     </div>
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
+    ${p.ask ? `<div class="kv ask">❓ ${esc(p.ask).replace(/\n/g, '<br>')} ${ed ? '<button data-act="askdone" class="mx">✓ خلصت</button>' : ''}</div>` : ''}
     ${(p.details || []).length ? `<h3>تفاصيل</h3>${p.details.map((d) => `<div class="kv"><b>${esc(d.k)}:</b> ${esc(d.v)}</div>`).join('')}` : ''}
     ${(p.media || []).length ? `<h3>تسجيلات وفيديو</h3>${p.media.map((m, i) => mediaHTML(m, i, ed)).join('')}` : ''}
     ${(p.gallery || []).length ? `<h3>الصور</h3><div class="gal">${p.gallery.map((g, i) => (src(g) ? `<img src="${esc(src(g))}" data-gal="${i}" alt="">` : '<div class="gph">…</div>')).join('')}</div>` : ''}
@@ -704,6 +705,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'cmp') { startCompare(id); return; }
   if (act === 'media') { openMedia(id); return; }
   if (act === 'merge') { openMerge(id); return; }
+  if (act === 'askdone') { get(id).ask = ''; touch(); return; }
   if (act === 'me') { setMe(id); toast('تمام — الصلات اتحسبت من منظورك'); return; }
   if (act === 'edit') openForm({ person: id });
   if (act === 'del') removePerson(id);
@@ -786,6 +788,7 @@ function openForm({ rel, anchor, person }) {
       <p class="hint" style="margin:4px 0 0">اكتب التاريخ كامل (سنة-شهر-يوم) عشان يظهر في «القادم» (أعياد الميلاد وذكرى الوفاة).</p>
       <label>رقم التليفون<input name="phone" type="tel" value="${esc(P?.phone)}"></label>
       <label>ملاحظات<textarea name="note">${esc(P?.note)}</textarea></label>
+      <label>❓ عايز أسأل عن… (بتظهر في «ناقص إيه»)<textarea name="ask" style="min-height:46px">${esc(P?.ask)}</textarea></label>
       <label>تفاصيل إضافية (الوظيفة، العنوان، تاريخ الجواز…)</label>
       <div id="dRows"></div><button type="button" id="dAdd">+ تفصيلة</button>
       <datalist id="dKeys"><option>الوظيفة<option>العنوان<option>المحافظة<option>التعليم<option>تاريخ الجواز<option>الهواية<option>تاريخ الوفاة<option>مكان الدفن</datalist>
@@ -870,7 +873,7 @@ function openForm({ rel, anchor, person }) {
     const v = (k) => (fd.get(k) || '').toString().trim();
     const obj = editing ? P : { id: uid(), parents: [], spouses: [] };
     const fullName = q('#autoOn').checked ? autoNow() : null;
-    Object.assign(obj, { name: fullName || v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note') });
+    Object.assign(obj, { name: fullName || v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note'), ask: v('ask') });
     if (editing && !v('death') && P.death === '?') obj.death = '?';
     obj.details = det.map((d) => ({ k: d.k.trim(), v: d.v.trim() })).filter((d) => d.k && d.v);
     obj.gallery = gal.map((g, i) => {
@@ -1029,6 +1032,57 @@ function openMerge(id, otherId) {
   (R ? stage2 : stage1)();
 }
 const kids_of = (p) => kids.get(p.id);
+
+// ───────────────────────── ناقص إيه؟ ─────────────────────────
+function gapLists() {
+  const P = data.people, nDesc = (p) => countDesc(p) - 1;
+  return {
+    ask: P.filter((p) => p.ask),
+    dups: dupPairs(),
+    noParents: P.filter((p) => !p.parents.length).sort((a, b) => nDesc(b) - nDesc(a)),
+    oneParent: P.filter((p) => p.parents.length === 1),
+    noBirth: P.filter((p) => yearOf(p) === 9999),
+    noPhoto: P.filter((p) => !p.photo),
+    deadNoDate: P.filter((p) => p.death === '?'),
+  };
+}
+function updateGaps() {
+  const b = $('#btnGaps'); b.hidden = !state.edit;
+  const n = data.people.filter((p) => p.ask).length;
+  $('.tx', b).textContent = n ? `ناقص إيه (${n})` : 'ناقص إيه';
+}
+function openGaps() {
+  const L = gapLists(), n = data.people.length || 1, pct = (c) => Math.round((100 * (n - c)) / n);
+  const li = (p, extra = '') => `<li data-go="${p.id}"><b>${esc(p.name)}</b> <small class="hint">${esc(extra || lineage(p) || lifeText(p))}</small></li>`;
+  const sec = (icon, title, items, row, open) => (items.length
+    ? `<details ${open ? 'open' : ''}><summary>${icon} ${title} <span class="cnt">${items.length}</span></summary><ul class="gl">${items.slice(0, 60).map(row).join('')}${items.length > 60 ? `<li class="hint">… و${items.length - 60} كمان</li>` : ''}</ul></details>` : '');
+  const bar = (label, p) => `<div class="gbar"><span>${label}</span><div><i style="width:${p}%"></i></div><b>${p}%</b></div>`;
+  const spouseOf = (p) => (p.spouses.length ? `متجوز/ة ${p.spouses.map((i) => get(i).name).join(' و')}` : '');
+  const body = [
+    sec('❓', 'أسئلة لسه عايز أسألها', L.ask, (p) => `<li data-go="${p.id}"><div><b>${esc(p.name)}</b><div class="hint">${esc(p.ask)}</div></div><button type="button" class="mx" data-askdone="${p.id}" title="خلصت">✓</button></li>`, true),
+    sec('🔀', 'ممكن يكونوا نفس الشخص', L.dups, (d) => `<li><span>${esc(d.a.name)} ↔ ${esc(d.b.name)}</span><button type="button" class="mx" data-merge="${d.a.id}|${d.b.id}">ادمج</button></li>`, true),
+    sec('🌱', 'مالهمش أب ولا أم مسجلين', L.noParents, (p) => li(p, [spouseOf(p), countDesc(p) > 1 ? `${countDesc(p) - 1} من نسله` : ''].filter(Boolean).join(' · ')), L.ask.length + L.dups.length === 0),
+    sec('👤', 'ناقصهم أب أو أم', L.oneParent, (p) => li(p, `مسجّل: ${get(p.parents[0]).name}`), false),
+    sec('📅', 'من غير سنة ميلاد', L.noBirth, (p) => li(p), false),
+    sec('🕊', 'متوفى من غير تاريخ وفاة', L.deadNoDate, (p) => li(p), false),
+    sec('🖼', 'من غير صورة', L.noPhoto, (p) => li(p), false),
+  ].join('');
+  dlg.innerHTML = `<form><h2>📋 ناقص إيه؟</h2>
+    ${bar('عندهم والدين', pct(L.noParents.length + L.oneParent.length * 0.5))}${bar('عندهم سنة ميلاد', pct(L.noBirth.length))}${bar('عندهم صورة', pct(L.noPhoto.length))}
+    ${body || '<p class="hint">🎉 مفيش حاجة ناقصة!</p>'}
+    <div class="dlgActions"><button type="button" data-close class="primary">إغلاق</button></div></form>`;
+  $('[data-close]', dlg).onclick = () => dlg.close();
+  dlg.querySelectorAll('details').forEach((d) => d.addEventListener('toggle', () => { /* keep user's open/close choice */ }));
+  $('form', dlg).onclick = (e) => {
+    const done = e.target.closest('[data-askdone]');
+    if (done) { e.stopPropagation(); get(done.dataset.askdone).ask = ''; touch(); const y = dlg.scrollTop; openGaps(); dlg.scrollTop = y; return; }
+    const mg = e.target.closest('[data-merge]');
+    if (mg) { const [a, b] = mg.dataset.merge.split('|'); openMerge(a, b); return; }
+    const go = e.target.closest('[data-go]'); if (go) { dlg.close(); locate(go.dataset.go); }
+  };
+  if (!dlg.open) dlg.showModal();
+}
+$('#btnGaps').onclick = openGaps;
 
 // ───────────────────────── صوت وفيديو ─────────────────────────
 const MAX_VIDEO = 25 * 1024 * 1024, MAX_AUDIO = 12 * 1024 * 1024;

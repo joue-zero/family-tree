@@ -288,3 +288,17 @@ dialog:has(.lb) { width: min(900px, 96vw); }
 .mgopt input { display: none; }
 .mgopt span { display: block; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; color: var(--ink); font-size: 14px; }
 .mgopt input:checked + span { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+
+/* gaps page */
+.gbar { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+.gbar > span { width: 110px; color: var(--muted); }
+.gbar > div { flex: 1; height: 8px; border-radius: 99px; background: var(--bg); overflow: hidden; }
+.gbar i { display: block; height: 100%; background: var(--accent); }
+.gbar b { width: 38px; text-align: end; }
+details { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+summary { cursor: pointer; font-weight: 600; }
+.cnt { background: var(--accent); color: var(--accent-ink); border-radius: 99px; padding: 0 8px; font-size: 12px; margin-inline-start: 6px; }
+.gl { list-style: none; margin: 6px 0 0; padding: 0; max-height: 30vh; overflow: auto; }
+.gl li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 10px; cursor: pointer; }
+.gl li:hover { background: var(--bg); }
+.kv.ask { background: color-mix(in srgb, #e0a526 18%, var(--surface)); border-radius: 10px; padding: 6px 10px; }
