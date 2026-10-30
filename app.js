@@ -119,7 +119,7 @@ function countDesc(p, seen = new Set()) {
 // ───────────────────────── persistence ─────────────────────────
 const clean = (p) => {
   const o = {};
-  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'ask', 'details', 'gallery', 'media', 'parents', 'spouses']) {
+  for (const k of ['id', 'name', 'nick', 'gender', 'birth', 'death', 'photo', 'phone', 'note', 'ask', 'unsure', 'source', 'details', 'gallery', 'media', 'parents', 'spouses']) {
     const v = p[k]; if (v && (!Array.isArray(v) || v.length)) o[k] = v;
   }
   return o;
@@ -530,7 +530,8 @@ function cardHTML(c) {
   const pkb = pk >= 0 && !c.ghost ? `<span class="pk">${pk + 1}</span>` : '';
   const me = state.me && byId.has(state.me) && !c.ghost ? shortRel(get(state.me), p) : '';
   const rl = me ? `<span class="rl${p.id === state.me ? ' is-me' : ''}">${esc(me)}</span>` : '';
-  return `<div class="av">${av}</div><div class="nm">${esc(p.name)}</div>${note}${rl}${up}${tog}${pkb}`;
+  const uns = p.unsure && !c.ghost ? `<span class="bdg uns" title="معلومة غير مؤكدة${p.source ? ' — المصدر: ' + esc(p.source) : ''}">⚠</span>` : '';
+  return `<div class="av">${av}</div><div class="nm">${esc(p.name)}</div>${note}${rl}${up}${tog}${pkb}${uns}`;
 }
 
 function render(opts = {}) {
@@ -743,6 +744,7 @@ function renderPanel() {
     </div>
     ${p.phone ? `<div class="kv">📞 <a href="tel:${esc(p.phone)}">${esc(p.phone)}</a></div>` : ''}
     ${p.note ? `<div class="kv">${esc(p.note).replace(/\n/g, '<br>')}</div>` : ''}
+    ${p.unsure || p.source ? `<div class="kv uns">${p.unsure ? '⚠ <b>غير مؤكد</b>' : '✓ مؤكد'}${p.source ? ' — المصدر: ' + esc(p.source) : ''}</div>` : ''}
     ${p.ask ? `<div class="kv ask">❓ ${esc(p.ask).replace(/\n/g, '<br>')} ${ed ? '<button data-act="askdone" class="mx">✓ خلصت</button>' : ''}</div>` : ''}
     ${(p.details || []).length ? `<h3>تفاصيل</h3>${p.details.map((d) => `<div class="kv"><b>${esc(d.k)}:</b> ${esc(d.v)}</div>`).join('')}` : ''}
     ${(p.media || []).length ? `<h3>تسجيلات وفيديو</h3>${p.media.map((m, i) => mediaHTML(m, i, ed)).join('')}` : ''}
@@ -759,6 +761,7 @@ function renderPanel() {
       <button data-add="parent" ${p.parents.length >= 2 ? 'disabled' : ''}>+ أب / أم</button>
       <button data-add="sibling" ${p.parents.length ? '' : 'disabled title="أضف الأب أو الأم الأول"'}>+ أخ / أخت</button></div>
       <div class="btnrow"><button data-act="media">🎙 صوت / 🎬 فيديو</button><button data-act="merge">🔀 دمج مع شخص</button></div>
+      <div class="btnrow"><button data-act="unsure">${p.unsure ? '✓ أكّدت المعلومة' : '⚠ علّم غير مؤكد'}</button></div>
       <div class="btnrow"><button data-act="edit">✎ تعديل البيانات</button><button class="danger" data-act="del">حذف</button></div>` : ''}`;
 }
 panel.addEventListener('click', (e) => {
@@ -780,6 +783,7 @@ panel.addEventListener('click', (e) => {
   if (act === 'media') { openMedia(id); return; }
   if (act === 'merge') { openMerge(id); return; }
   if (act === 'askdone') { get(id).ask = ''; touch(); return; }
+  if (act === 'unsure') { const q = get(id); q.unsure = !q.unsure; touch(); toast(q.unsure ? '⚠ اتعلّم غير مؤكد' : '✓ اتأكّدت'); return; }
   if (act === 'me') { setMe(id); toast('تمام — الصلات اتحسبت من منظورك'); return; }
   if (act === 'edit') openForm({ person: id });
   if (act === 'del') removePerson(id);
@@ -862,6 +866,9 @@ function openForm({ rel, anchor, person }) {
       <p class="hint" style="margin:4px 0 0">اكتب التاريخ كامل (سنة-شهر-يوم) عشان يظهر في «القادم» (أعياد الميلاد وذكرى الوفاة).</p>
       <label>رقم التليفون<input name="phone" type="tel" value="${esc(P?.phone)}"></label>
       <label>ملاحظات<textarea name="note">${esc(P?.note)}</textarea></label>
+      <label class="chk"><input type="checkbox" name="unsure" ${P?.unsure ? 'checked' : ''}> ⚠ المعلومات دي غير مؤكدة</label>
+      <label>المصدر (قالها مين؟)<input name="source" list="srcList" value="${esc(P?.source)}" placeholder="مثال: خالي سامي في فرح فلان"></label>
+      <datalist id="srcList">${[...new Set([...data.people.map((x) => x.source).filter(Boolean), ...data.people.map((x) => x.name)])].slice(0, 200).map((s) => `<option value="${esc(s)}">`).join('')}</datalist>
       <label>❓ عايز أسأل عن… (بتظهر في «ناقص إيه»)<textarea name="ask" style="min-height:46px">${esc(P?.ask)}</textarea></label>
       <label>تفاصيل إضافية (الوظيفة، العنوان، تاريخ الجواز…)</label>
       <div id="dRows"></div><button type="button" id="dAdd">+ تفصيلة</button>
@@ -947,7 +954,7 @@ function openForm({ rel, anchor, person }) {
     const v = (k) => (fd.get(k) || '').toString().trim();
     const obj = editing ? P : { id: uid(), parents: [], spouses: [] };
     const fullName = q('#autoOn').checked ? autoNow() : null;
-    Object.assign(obj, { name: fullName || v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note'), ask: v('ask') });
+    Object.assign(obj, { name: fullName || v('name'), nick: v('nick'), gender: v('gender'), birth: v('birth'), death: v('death'), phone: v('phone'), note: v('note'), ask: v('ask'), unsure: fd.get('unsure') === 'on', source: v('source') });
     if (editing && !v('death') && P.death === '?') obj.death = '?';
     obj.details = det.map((d) => ({ k: d.k.trim(), v: d.v.trim() })).filter((d) => d.k && d.v);
     obj.gallery = gal.map((g, i) => {
@@ -1039,6 +1046,8 @@ const uni = (a, b, key = (x) => x) => {
 };
 function mergePeople(K, R, pick) {   // keep K, fold R into it, repoint every link to R
   for (const [f] of MERGE_FIELDS) { const kv = K[f] || '', rv = R[f] || ''; K[f] = kv && rv && kv !== rv ? (pick[f] === 'R' ? rv : kv) : kv || rv; }
+  K.unsure = !!(K.unsure && R.unsure);        // stays "unsure" only if both copies were
+  K.source = K.source && R.source && K.source !== R.source ? `${K.source} + ${R.source}` : K.source || R.source || '';
   for (const f of ['note', 'ask']) K[f] = K[f] && R[f] && K[f] !== R[f] ? `${K[f]}\n${R[f]}` : K[f] || R[f] || '';
   if (K.photo && R.photo && K.photo !== R.photo) K.gallery = [...(K.gallery || []), R.photo]; else K.photo = K.photo || R.photo;
   K.details = uni(K.details, R.details, (d) => `${d.k}|${d.v}`);
@@ -1118,6 +1127,7 @@ function gapLists() {
     noBirth: P.filter((p) => yearOf(p) === 9999),
     noPhoto: P.filter((p) => !p.photo),
     deadNoDate: P.filter((p) => p.death === '?'),
+    unsure: P.filter((p) => p.unsure),
   };
 }
 function updateGaps() {
@@ -1139,6 +1149,7 @@ function openGaps() {
     sec('👤', 'ناقصهم أب أو أم', L.oneParent, (p) => li(p, `مسجّل: ${get(p.parents[0]).name}`), false),
     sec('📅', 'من غير سنة ميلاد', L.noBirth, (p) => li(p), false),
     sec('🕊', 'متوفى من غير تاريخ وفاة', L.deadNoDate, (p) => li(p), false),
+    sec('⚠', 'معلومات غير مؤكدة', L.unsure, (p) => `<li data-go="${p.id}"><div><b>${esc(p.name)}</b><div class="hint">${p.source ? 'المصدر: ' + esc(p.source) : 'من غير مصدر مسجّل'}</div></div><button type="button" class="mx" data-confirm="${p.id}" title="أكّدت">✓</button></li>`, false),
     sec('🖼', 'من غير صورة', L.noPhoto, (p) => li(p), false),
   ].join('');
   dlg.innerHTML = `<form><h2>📋 ناقص إيه؟</h2>
@@ -1148,6 +1159,8 @@ function openGaps() {
   $('[data-close]', dlg).onclick = () => dlg.close();
   dlg.querySelectorAll('details').forEach((d) => d.addEventListener('toggle', () => { /* keep user's open/close choice */ }));
   $('form', dlg).onclick = (e) => {
+    const cf = e.target.closest('[data-confirm]');
+    if (cf) { e.stopPropagation(); get(cf.dataset.confirm).unsure = false; touch(); const y = dlg.scrollTop; openGaps(); dlg.scrollTop = y; return; }
     const done = e.target.closest('[data-askdone]');
     if (done) { e.stopPropagation(); get(done.dataset.askdone).ask = ''; touch(); const y = dlg.scrollTop; openGaps(); dlg.scrollTop = y; return; }
     const mg = e.target.closest('[data-merge]');
@@ -1293,6 +1306,7 @@ async function renderTreeCanvas(openAll) {
     wrapName(x, p.name, CARD_W - 18).forEach((ln, i) => x.fillText(ln, cx, c.y + 12 + 70 + 22 + i * 19.5));
     x.fillStyle = C.muted; x.font = FONT(400, 12);
     x.fillText(c.ghost ? 'مذكور في فرع تاني' : lifeText(p), cx, c.y + 12 + 70 + 22 + 39 + 14);
+    if (p.unsure && !c.ghost) { x.fillStyle = '#c47f00'; x.font = FONT(700, 15); x.fillText('⚠', c.x + 14, c.y + 20); x.fillStyle = C.muted; x.font = FONT(400, 12); }
     const rel = me && !c.ghost ? shortRel(me, p) : '';
     if (rel) {
       x.font = FONT(600, 11.5); const w = Math.min(CARD_W - 12, x.measureText(rel).width + 20), ry = c.y + CARD_H - 34;
@@ -1499,7 +1513,8 @@ function pairHTML(a, b) {
   const x = describe(a, b), y = describe(b, a);
   const lines = [...x.lines, ...y.lines];
   const common = x.common.length ? `<div class="hint">الجد المشترك: ${x.common.map((c) => esc(c.name)).join(' و')}</div>` : '';
-  return `<div class="pair"><div class="pn">${esc(a.name)} ↔ ${esc(b.name)}</div>${lines.length ? lines.map((l) => `<div>${esc(l)}</div>`).join('') : (() => { const ch = linkChain(a, b); return ch ? `<div>مرتبطين بالمصاهرة (مفيش قرابة دم): ${esc(a.name)} ← ${esc(ch)}</div>` : '<div class="hint">مفيش صلة مسجّلة بينهم لسه — ممكن تكون محتاجة تضيف أب/أم أو جواز ناقص.</div>'; })()}${common}</div>`;
+  const doubt = a.unsure || b.unsure ? `<div class="hint">⚠ معلومات ${[a, b].filter((z) => z.unsure).map((z) => esc(z.name)).join(' و')} غير مؤكدة</div>` : '';
+  return `<div class="pair"><div class="pn">${esc(a.name)} ↔ ${esc(b.name)}</div>${doubt}${lines.length ? lines.map((l) => `<div>${esc(l)}</div>`).join('') : (() => { const ch = linkChain(a, b); return ch ? `<div>مرتبطين بالمصاهرة (مفيش قرابة دم): ${esc(a.name)} ← ${esc(ch)}</div>` : '<div class="hint">مفيش صلة مسجّلة بينهم لسه — ممكن تكون محتاجة تضيف أب/أم أو جواز ناقص.</div>'; })()}${common}</div>`;
 }
 function startCompare(id) { state.cmp = true; state.picks = id ? [id] : []; render(); }
 function togglePick(id) {

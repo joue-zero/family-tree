@@ -308,3 +308,9 @@ summary { cursor: pointer; font-weight: 600; }
 #etool button { width: 40px; height: 38px; padding: 0; font-size: 18px; border-radius: 10px; border: 0; background: transparent; }
 #etool button:disabled { opacity: .3; }
 .hist li { cursor: default; }
+
+/* unsure flag */
+.bdg.uns { top: -10px; inset-inline-start: -6px; transform: none; background: #fff3d6; border-color: #e0a526; color: #8a5a00; cursor: help; }
+[dir=rtl] .bdg.uns { transform: none; }
+.card:has(.bdg.uns) { border-top-style: dashed; }
+.kv.uns { background: color-mix(in srgb, #e0a526 14%, var(--surface)); border-radius: 10px; padding: 6px 10px; }
